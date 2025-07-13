@@ -1,0 +1,378 @@
+/* /static/style.css */
+
+/* --- Base & Typography --- */
+:root {
+    --primary-font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --background-color: #f0f2f5;
+    --container-bg: #ffffff;
+    --header-bg: #0078D4;
+    --user-bubble-bg: #0078D4;
+    --user-bubble-text: #ffffff;
+    --bot-bubble-bg: #e5e5ea;
+    --bot-bubble-text: #2c2c2e;
+    --input-bg: #f0f2f5;
+    --input-border: #d1d1d6;
+    --input-focus-border: #0078D4;
+    --text-color: #1c1c1e;
+    --light-text-color: #8a8a8e;
+    --border-color: #e1e1e1;
+    --shadow-color: rgba(0, 0, 0, 0.08);
+}
+
+body, html {
+    height: 100%;
+    margin: 0;
+    font-family: var(--primary-font);
+    background-color: var(--background-color);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* --- App Container & Layout --- */
+.chat-app-container {
+    width: 100%;
+    max-width: 800px;
+    height: 90vh;
+    max-height: 800px;
+    background-color: var(--container-bg);
+    border-radius: 16px;
+    box-shadow: 0 8px 30px var(--shadow-color);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+
+/* --- Header --- */
+.chat-header {
+    background-color: var(--header-bg);
+    color: white;
+    padding: 16px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.chat-header h1 {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.header-controls button {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    margin-left: 8px;
+    font-size: 0.875rem;
+    transition: background-color 0.2s ease;
+}
+
+.header-controls button:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* --- Chat Box & Messages --- */
+#chat-box {
+    flex-grow: 1;
+    padding: 24px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.message {
+    display: flex;
+    flex-direction: column;
+    max-width: 75%;
+    animation: fadeIn 0.4s ease-out;
+}
+
+.message .content {
+    padding: 12px 16px;
+    border-radius: 20px;
+    line-height: 1.5;
+    font-size: 1rem;
+    word-wrap: break-word;
+}
+
+/* User Messages */
+.message.user {
+    align-self: flex-end;
+    align-items: flex-end;
+}
+
+.message.user .content {
+    background-color: var(--user-bubble-bg);
+    color: var(--user-bubble-text);
+    border-bottom-right-radius: 4px;
+}
+
+/* Bot Messages */
+.message.bot {
+    align-self: flex-start;
+    align-items: flex-start;
+}
+
+.message.bot .content {
+    background-color: var(--bot-bubble-bg);
+    color: var(--bot-bubble-text);
+    border-bottom-left-radius: 4px;
+}
+
+.message.bot .content strong {
+    color: #005a9e; /* Slightly darker blue for emphasis */
+}
+
+/* Typing Indicator */
+.message.loading .content {
+    background: var(--bot-bubble-bg);
+    display: inline-block;
+    padding: 12px 16px;
+}
+
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.typing-indicator span {
+    height: 8px;
+    width: 8px;
+    background-color: #9b9b9b;
+    border-radius: 50%;
+    animation: typing 1.2s infinite ease-in-out;
+}
+
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing {
+    0%, 80%, 100% { transform: scale(0); }
+    40% { transform: scale(1.0); }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+
+/* --- Chat Input Area --- */
+#chat-form {
+    display: flex;
+    align-items: center;
+    padding: 16px 24px;
+    border-top: 1px solid var(--border-color);
+    background-color: var(--container-bg);
+}
+
+#message-input {
+    flex-grow: 1;
+    border: 1px solid var(--input-border);
+    background-color: var(--input-bg);
+    border-radius: 20px;
+    padding: 12px 18px;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+#message-input:focus {
+    border-color: var(--input-focus-border);
+}
+
+#send-btn {
+    background-color: var(--user-bubble-bg);
+    border: none;
+    color: white;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    margin-left: 12px;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+#send-btn:hover {
+    background-color: #005a9e;
+}
+
+#send-btn:active {
+    transform: scale(0.95);
+}
+
+#send-btn svg {
+    width: 24px;
+    height: 24px;
+}
+
+/* --- Modals --- */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0, 0, 0, 0.5);
+    justify-content: center;
+    align-items: center;
+    animation: fadeIn 0.3s;
+}
+
+.modal-content {
+    background-color: #fff;
+    padding: 40px;
+    border-radius: 16px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+    width: 90%;
+    max-width: 450px;
+    text-align: center;
+    position: relative;
+}
+
+.modal-content h2 {
+    margin-top: 0;
+    margin-bottom: 24px;
+    font-size: 1.75rem;
+    font-weight: 600;
+}
+
+.modal-content .form-group {
+    margin-bottom: 20px;
+    text-align: left;
+}
+
+.modal-content label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    font-size: 0.9rem;
+    color: var(--light-text-color);
+}
+
+.modal-content input {
+    width: 100%;
+    padding: 12px 16px;
+    border: 1px solid var(--input-border);
+    border-radius: 8px;
+    font-size: 1rem;
+    box-sizing: border-box; /* Important */
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.modal-content input:focus {
+    outline: none;
+    border-color: var(--input-focus-border);
+    box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.2);
+}
+
+.modal-content .button-group {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.modal-content button {
+    flex: 1;
+    padding: 14px;
+    font-size: 1rem;
+    font-weight: 600;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.modal-content button.primary {
+    background-color: var(--user-bubble-bg);
+    color: white;
+}
+
+.modal-content button.primary:hover {
+    background-color: #005a9e;
+}
+
+#close-modal-btn {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    background: transparent;
+    border: none;
+    font-size: 1.5rem;
+    color: var(--light-text-color);
+    cursor: pointer;
+}
+
+/* --- Schedule Confirmation Bar --- */
+#schedule-confirmation-bar {
+    display: none;
+    padding: 12px 24px;
+    background-color: #fff8e1;
+    border-top: 1px solid #ffecb3;
+    border-bottom: 1px solid #ffecb3;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.9rem;
+    animation: slideInDown 0.3s ease-out;
+}
+
+#schedule-confirmation-bar p {
+    margin: 0;
+    color: #6d4c41;
+}
+
+#schedule-confirmation-bar .button-group button {
+    margin-left: 8px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    border: 1px solid transparent;
+}
+
+#confirm-schedule-btn {
+    background-color: #4caf50;
+    color: white;
+    border-color: #4caf50;
+}
+#confirm-schedule-btn:hover {
+    background-color: #43a047;
+}
+
+#cancel-schedule-btn {
+    background-color: transparent;
+    color: #f44336;
+    border-color: #ef9a9a;
+}
+#cancel-schedule-btn:hover {
+    background-color: #ffebee;
+}
+
+@keyframes slideInDown {
+    from { transform: translateY(-100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+/* --- Utility & Responsiveness --- */
+@media (max-width: 600px) {
+    .chat-app-container {
+        height: 100vh;
+        max-height: none;
+        border-radius: 0;
+    }
+} 

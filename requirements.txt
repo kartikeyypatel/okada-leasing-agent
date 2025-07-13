@@ -1,0 +1,15 @@
+fastapi
+pydantic[email]
+pydantic-settings
+uvicorn
+python-dotenv
+llama-index
+llama-index-llms-gemini
+llama-index-embeddings-gemini
+pandas
+llama-index-retrievers-bm25
+motor
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+python-multipart

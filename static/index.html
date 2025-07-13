@@ -1,0 +1,76 @@
+<!-- /static/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Okada Leasing Agent</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Main Application Container -->
+    <div class="chat-app-container">
+        <header class="chat-header">
+            <h1>Okada Leasing Agent</h1>
+            <div class="header-controls">
+                <button id="upload-btn" title="Upload Documents">Upload</button>
+                <button id="switch-user-btn" title="Switch User">Switch User</button>
+                <button id="reset-data-btn" title="Reset Data" class="danger">Reset</button>
+            </div>
+        </header>
+        
+        <main id="chat-box" class="chat-box"></main>
+
+        <div id="schedule-confirmation-bar">
+            <p id="schedule-details-text"></p>
+            <div class="button-group">
+                <button id="confirm-schedule-btn">Confirm</button>
+                <button id="cancel-schedule-btn">Cancel</button>
+            </div>
+        </div>
+
+        <footer id="chat-form" class="chat-form">
+            <input type="text" id="message-input" placeholder="Start typing..." autocomplete="off">
+            <button id="send-btn" type="submit">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            </button>
+        </footer>
+    </div>
+
+    <!-- User Setup Modal -->
+    <div id="user-setup-modal" class="modal" style="display: flex;">
+        <div class="modal-content">
+            <button id="close-modal-btn" title="Close">&times;</button>
+            <h2>Welcome</h2>
+            <p style="color: #666; margin-top: -16px; margin-bottom: 32px;">Please sign in or create an account to begin.</p>
+            <form id="user-setup-form">
+                <div class="form-group">
+                    <label for="full-name-input">Full Name</label>
+                    <input type="text" id="full-name-input" placeholder="e.g., Jane Doe" required>
+                </div>
+                <div class="form-group">
+                    <label for="email-input">Email Address</label>
+                    <input type="email" id="email-input" placeholder="e.g., jane.doe@example.com" required>
+                </div>
+                <div class="form-group">
+                    <label for="company-name-input">Company Name (Optional)</label>
+                    <input type="text" id="company-name-input" placeholder="e.g., Example Inc.">
+                </div>
+                <div class="button-group">
+                    <button type="button" id="login-btn">Log In</button>
+                    <button type="submit" class="primary">Sign Up</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Hidden file input for uploads -->
+    <input type="file" id="document-upload" style="display: none;" accept=".csv">
+
+    <script src="app.js"></script>
+</body>
+</html> 
