@@ -29,11 +29,11 @@ The diagram below illustrates the flow of data and interaction between the syste
 ```mermaid
 graph TD
     subgraph "User"
-        A[Browser]
+        A["Browser"]
     end
 
     subgraph "Frontend"
-        B[Static HTML/JS/CSS]
+        B["Static HTML/JS/CSS"]
     end
 
     subgraph "Backend (FastAPI)"
@@ -45,16 +45,16 @@ graph TD
     end
 
     subgraph "Core Logic"
-        H[RAG Module<br/>(LlamaIndex & Gemini)]
-        I[CRM Module]
-        J[Calendar Module]
+        H["RAG Module<br/>(LlamaIndex and Gemini)"]
+        I["CRM Module"]
+        J["Calendar Module"]
     end
 
     subgraph "External Services & Data"
-        K[MongoDB Atlas]
-        L[Google Gemini API]
-        M[Google Calendar API]
-        N[User-Uploaded Documents (.csv)]
+        K["MongoDB Atlas"]
+        L["Google Gemini API"]
+        M["Google Calendar API"]
+        N["User-Uploaded Documents (.csv)"]
     end
 
     A -- "Interacts with UI" --> B
