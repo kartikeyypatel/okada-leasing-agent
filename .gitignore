@@ -146,4 +146,7 @@ sample_docs/
 
 # IDE settings
 .vscode/
-.idea/ 
+.idea/
+
+# Secret Files
+credentials.json 
