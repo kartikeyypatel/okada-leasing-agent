@@ -1,6 +1,7 @@
 # /app/config.py
 import os
 from pydantic_settings import BaseSettings
+from typing import Optional
 
 # --- NEW: Disable Telemetry ---
 # This prevents the 'resource' module from being imported on Windows,
@@ -20,7 +21,12 @@ class Settings(BaseSettings):
     MONGO_DATABASE_NAME: str
     # Renamed to match the variable in the .env file
     GOOGLE_CALENDAR_CREDENTIALS_PATH: str
-
+    
+    # ChromaDB Configuration
+    CHROMA_PERSIST_DIRECTORY: str = "./user_chroma_db"
+    CHROMA_HOST: Optional[str] = None
+    CHROMA_PORT: Optional[int] = None
+    CHROMA_COLLECTION_PREFIX: str = "okada_user_"
 
     class Config:
         env_file = _ENV_FILE

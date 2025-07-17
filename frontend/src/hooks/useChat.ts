@@ -1,0 +1,197 @@
+import { useState, useEffect } from 'react';
+import toast from 'react-hot-toast';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+
+interface Message {
+  role: 'user' | 'bot';
+  content: string;
+}
+
+export const useChat = (userEmail: string | null) => {
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [input, setInput] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [isIndexing, setIsIndexing] = useState(false);
+    
+    const [availableDocs, setAvailableDocs] = useState<string[]>([]);
+    const [isAwaitingDocSelection, setIsAwaitingDocSelection] = useState(false);
+    
+    // This effect now correctly fetches documents for a logged-in user
+    useEffect(() => {
+        if (userEmail) {
+            const fetchUserDocs = async () => {
+                try {
+                    const docsResponse = await fetch(`${API_BASE_URL}/documents/list/${encodeURIComponent(userEmail)}`);
+                    if (docsResponse.ok) {
+                        const docsData = await docsResponse.json();
+                        if (docsData.documents && docsData.documents.length > 0) {
+                            setAvailableDocs(docsData.documents);
+                            setIsAwaitingDocSelection(true);
+                        }
+                    }
+                } catch (error) {
+                    toast.error("Could not fetch user documents.");
+                }
+            };
+            fetchUserDocs();
+        } else {
+            // Reset all state on logout
+            setMessages([]);
+            setAvailableDocs([]);
+            setIsAwaitingDocSelection(false);
+        }
+    }, [userEmail]);
+
+    const pollIndexingStatus = () => {
+        const intervalId = setInterval(async () => {
+            try {
+                const response = await fetch(`${API_BASE_URL}/documents/status`);
+                const data = await response.json();
+
+                if (data.status === 'success' || data.status === 'error' || data.status === 'idle') {
+                    clearInterval(intervalId);
+                    toast.dismiss(); // Remove the "Loading..." toast
+                    
+                    if (data.status === 'success') {
+                        toast.success(data.message || "Documents ready!");
+                        // After indexing, we can transition to the chat
+                        setIsAwaitingDocSelection(false);
+                        fetchHistory(); // Fetch history to start chat
+                    } else {
+                        toast.error(data.message || "Failed to load documents.");
+                    }
+                    setIsIndexing(false); // Re-enable the chat input
+                }
+            } catch (error) {
+                clearInterval(intervalId);
+                toast.dismiss();
+                toast.error("Could not get document status.");
+                setIsIndexing(false);
+            }
+        }, 3000);
+    };
+    
+    // --- NEW: Dedicated function to fetch chat history ---
+    const fetchHistory = async () => {
+        if (!userEmail) return;
+
+        try {
+            const historyResponse = await fetch(`${API_BASE_URL}/conversations/${encodeURIComponent(userEmail)}`);
+            if (historyResponse.ok) {
+                const historyData = await historyResponse.json();
+                if (historyData.history && historyData.history.length > 0) {
+                    const formattedHistory = historyData.history.map((msg: any) => ({
+                        role: msg.role === 'assistant' ? 'bot' : 'user',
+                        content: msg.content,
+                    }));
+                    setMessages(formattedHistory);
+                } else {
+                    // If user exists but has no history, show a fresh welcome message
+                    setMessages([{ role: 'bot', content: `Hi! How can I help you today?` }]);
+                }
+            } else {
+                 setMessages([{ role: 'bot', content: `Hi! I couldn't retrieve your past conversations.` }]);
+            }
+        } catch (error) {
+            toast.error("Failed to load chat history.");
+        }
+    };
+
+    const handleSendMessage = async (message: string) => {
+        if (!message || !userEmail) return;
+        
+        const userMessage: Message = { role: 'user', content: message };
+        setMessages((prev) => [...prev, userMessage]);
+        setIsLoading(true);
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: userEmail,
+                    message: message,
+                    history: [...messages, userMessage].map(m => ({
+                        role: m.role === 'bot' ? 'assistant' : 'user',
+                        content: m.content
+                    })),
+                }),
+            });
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Failed to get a response.');
+            }
+            const data = await response.json();
+            setMessages((prev) => [...prev, { role: 'bot', content: data.answer }]);
+        } catch (error) {
+            setMessages((prev) => [...prev, { role: 'bot', content: `Error: ${(error as Error).message}` }]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    
+    const loadSelectedDocuments = async (selectedDocs: string[]): Promise<boolean> => {
+        if (!userEmail || selectedDocs.length === 0) {
+            toast.error("Please select at least one document.");
+            return false;
+        }
+        
+        setIsIndexing(true);
+        toast.loading("Loading selected documents... This may take a moment.");
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/documents/load`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userEmail, filenames: selectedDocs }),
+            });
+            
+            if (!response.ok) throw new Error("Failed to start the document loading process.");
+            
+            pollIndexingStatus();
+            return true;
+
+        } catch (error) {
+             toast.dismiss();
+             toast.error(`Failed to load documents: ${(error as Error).message}`);
+             setIsIndexing(false);
+             return false;
+        }
+    };
+
+    const handleFileUpload = async (file: File) => {
+        if (!userEmail) {
+            toast.error("Please log in to upload documents.");
+            return;
+        }
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('user_id', userEmail);
+
+        setIsIndexing(true);
+        toast.loading(`Uploading ${file.name}...`);
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/documents/upload`, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!response.ok) throw new Error("File upload failed.");
+            
+            pollIndexingStatus();
+        } catch (error) {
+            toast.dismiss();
+            toast.error(`Upload failed: ${(error as Error).message}`);
+            setIsIndexing(false);
+        }
+    };
+
+    // Make sure to export the new function
+    return { 
+        messages, setMessages, input, setInput, handleSendMessage, isLoading, isIndexing,
+        availableDocs, isAwaitingDocSelection, setIsAwaitingDocSelection,
+        loadSelectedDocuments, handleFileUpload,
+        fetchHistory // --- NEWLY EXPORTED
+    };
+};

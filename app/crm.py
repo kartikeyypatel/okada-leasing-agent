@@ -1,9 +1,13 @@
 # /app/crm.py
 import re
-from typing import Optional
+from typing import Optional, List
 from app.database import get_database
 from app.models import User, Company
 from motor.motor_asyncio import AsyncIOMotorCollection
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 def get_domain_from_email(email: str) -> Optional[str]:
     """Extracts the domain from an email address."""
@@ -48,7 +52,8 @@ async def create_or_update_user(
     email: str,
     full_name: Optional[str] = None,
     company_name: Optional[str] = None,
-    preferences: Optional[dict] = None
+    preferences: Optional[dict] = None,
+    recommendation_preferences: Optional[dict] = None
 ) -> User:
     """
     Creates a new user or updates an existing one.
@@ -78,6 +83,11 @@ async def create_or_update_user(
             # Using dot notation for updating nested dictionary fields in MongoDB
             for key, value in preferences.items():
                 update_data[f"preferences.{key}"] = value
+        
+        # Merge recommendation preferences
+        if recommendation_preferences:
+            for key, value in recommendation_preferences.items():
+                update_data[f"recommendation_preferences.{key}"] = value
 
         if update_data:
             await user_collection.update_one({"_id": existing_user_data["_id"]}, {"$set": update_data})
@@ -104,7 +114,8 @@ async def create_or_update_user(
             full_name=full_name,
             email=email,
             company_id=company_id,
-            preferences=preferences or {}
+            preferences=preferences or {},
+            recommendation_preferences=recommendation_preferences or {}
         )
         user_dict = new_user.model_dump(by_alias=True, exclude_none=True)
         result = await user_collection.insert_one(user_dict)
@@ -121,3 +132,102 @@ async def delete_user_by_email(email: str) -> bool:
     user_collection: AsyncIOMotorCollection = db["users"]
     delete_result = await user_collection.delete_one({"email": email})
     return delete_result.deleted_count > 0
+
+# Add appointment tracking functions to app/crm.py
+
+async def add_appointment_to_user(user_email: str, session_id: str, appointment_data: dict) -> bool:
+    """
+    Add an appointment to a user's history.
+    
+    Args:
+        user_email: User's email address
+        session_id: Appointment session ID
+        appointment_data: Appointment details
+        
+    Returns:
+        Success status
+    """
+    try:
+        db = get_database()
+        user_collection = db["users"]
+        
+        # Update user's appointment history
+        result = await user_collection.update_one(
+            {"email": user_email},
+            {
+                "$push": {"appointment_history": session_id},
+                "$set": {"updated_at": datetime.now()}
+            }
+        )
+        
+        # Also store the appointment details separately for easy querying
+        appointment_collection = db["user_appointments"]
+        await appointment_collection.insert_one({
+            "user_email": user_email,
+            "session_id": session_id,
+            "appointment_data": appointment_data,
+            "created_at": datetime.now()
+        })
+        
+        return result.modified_count > 0
+        
+    except Exception as e:
+        logger.error(f"Error adding appointment to user {user_email}: {e}")
+        return False
+
+async def get_user_appointments(user_email: str) -> List[dict]:
+    """
+    Get all appointments for a user.
+    
+    Args:
+        user_email: User's email address
+        
+    Returns:
+        List of user's appointments
+    """
+    try:
+        db = get_database()
+        appointment_collection = db["user_appointments"]
+        
+        appointments = []
+        async for appointment in appointment_collection.find(
+            {"user_email": user_email}
+        ).sort("created_at", -1):
+            appointments.append(appointment)
+        
+        return appointments
+        
+    except Exception as e:
+        logger.error(f"Error getting appointments for user {user_email}: {e}")
+        return []
+
+async def update_appointment_preferences(user_email: str, preferences: dict) -> bool:
+    """
+    Update a user's appointment preferences.
+    
+    Args:
+        user_email: User's email address
+        preferences: Updated preferences
+        
+    Returns:
+        Success status
+    """
+    try:
+        db = get_database()
+        user_collection = db["users"]
+        
+        result = await user_collection.update_one(
+            {"email": user_email},
+            {
+                "$set": {
+                    "appointment_preferences": preferences,
+                    "updated_at": datetime.now()
+                }
+            }
+        )
+        
+        return result.modified_count > 0
+        
+    except Exception as e:
+        logger.error(f"Error updating appointment preferences for user {user_email}: {e}")
+        return False
