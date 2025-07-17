@@ -121,3 +121,11 @@ async def delete_user_by_email(email: str) -> bool:
     user_collection: AsyncIOMotorCollection = db["users"]
     delete_result = await user_collection.delete_one({"email": email})
     return delete_result.deleted_count > 0
+
+
+async def get_user_profile(email: str) -> Optional[User]:
+    """
+    Alias for get_user_by_email to maintain compatibility.
+    Retrieves a user profile by their email address.
+    """
+    return await get_user_by_email(email)

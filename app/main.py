@@ -82,7 +82,7 @@ async def chat(request: ChatRequest):
         if request.user_id:
             persistent_history = await history_module.get_user_history(request.user_id)
             # --- NEW: Load user's CRM profile for context ---
-            user_profile = await crm_module.get_user_by_email(request.user_id)
+            user_profile = await crm_module.get_user_profile(request.user_id)
         else:
             persistent_history = []
             user_profile = None
@@ -93,8 +93,13 @@ async def chat(request: ChatRequest):
         combined_history = persistent_history + request.history
 
         # Deduplicate while preserving order, in case of overlap
-        unique_history_tuples = {tuple(msg.items()) for msg in combined_history}
-        unique_history = [dict(t) for t in unique_history_tuples]
+        seen = set()
+        unique_history = []
+        for msg in combined_history:
+            msg_tuple = tuple(sorted(msg.items()))
+            if msg_tuple not in seen:
+                seen.add(msg_tuple)
+                unique_history.append(msg)
         # Sort by timestamp if available, but for now just use it as is.
         # This simple combination assumes client sends a continuation.
 
@@ -105,11 +110,51 @@ async def chat(request: ChatRequest):
         # --- Intent: Scheduling ---
         if intent_type == "scheduling":
             schedule_details = await extract_schedule_details(request.message)
-            if schedule_details.get("address") and schedule_details.get("time"):
-                response_text = "I can help with that. Please confirm the details below and I'll get it on the calendar."
+            
+            # Check if we have complete scheduling information
+            if schedule_details and schedule_details.get("address") and schedule_details.get("time"):
+                # Format the response with clear details
+                address = schedule_details.get("address")
+                time_str = schedule_details.get("time")
+                
+                try:
+                    # Parse and format the time for better display
+                    import datetime as dt
+                    parsed_time = dt.datetime.fromisoformat(time_str)
+                    formatted_time = parsed_time.strftime("%A, %B %d, %Y at %I:%M %p")
+                    
+                    response_text = f"""Perfect! I have all the details for your appointment. Please review and confirm:
+
+**Property Viewing**
+📍 **Location:** {address}
+🕐 **Date & Time:** {formatted_time}
+⏱️ **Duration:** 60 minutes
+
+Would you like me to confirm this appointment?"""
+                except (ValueError, AttributeError):
+                    response_text = f"""I can help schedule your appointment. Here are the details:
+
+**Property Viewing**
+📍 **Location:** {address}
+🕐 **Time:** {time_str}
+
+Would you like me to confirm this appointment?"""
+                
                 return ChatResponse(answer=response_text, schedule_details=schedule_details)
             else:
-                response_text = "I can certainly help you book an appointment. Which property are you interested in viewing, and when would you like to see it?"
+                # Ask for missing information
+                missing_info = []
+                if not schedule_details or not schedule_details.get("address"):
+                    missing_info.append("property address")
+                if not schedule_details or not schedule_details.get("time"):
+                    missing_info.append("preferred date and time")
+                
+                if missing_info:
+                    missing_str = " and ".join(missing_info)
+                    response_text = f"I'd be happy to help you schedule a property viewing! To book your appointment, I'll need the {missing_str}. Could you please provide these details?"
+                else:
+                    response_text = "I can certainly help you book an appointment. Which property are you interested in viewing, and when would you like to see it?"
+                
                 return ChatResponse(answer=response_text, schedule_details=None)
 
         # --- Build System Prompt (for all other intents) ---
@@ -408,23 +453,25 @@ async def classify_query(user_message: str) -> dict:
     Uses the LLM to classify the user's message to determine the correct response strategy.
     """
     prompt = f"""
-    Classify the user's message into ONE of the following categories: "property_inquiry", "top_n_inquiry", "scheduling", or "personal_reflection".
+    Classify the user's message into ONE of the following categories: "property_inquiry", "top_n_inquiry", "scheduling", or "general_chat".
     Respond with ONLY a single JSON object with a "type" key.
 
     - "property_inquiry": User is asking about property features, details, or qualitative descriptions (e.g., rent, size, address, amenities, "smaller kitchen").
     - "top_n_inquiry": User is asking for a ranked list using superlatives (e.g., "show me the cheapest", "what are the biggest?", "top 5").
-    - "scheduling": User wants to book, schedule, view, see, or confirm an appointment or a viewing.
-    - "personal_reflection": User is asking about themselves, their own details, or their preferences.
+    - "scheduling": User wants to book, schedule, view, see, or confirm an appointment or viewing. Also includes confirmation responses like "yes", "confirm", "book it".
+    - "general_chat": User is asking about themselves, their preferences, or having general conversation.
 
     Examples:
     - "what is the price of 84 mulberry st?" -> {{"type": "property_inquiry"}}
     - "i want to book an appointment" -> {{"type": "scheduling"}}
+    - "yes" (in context of scheduling) -> {{"type": "scheduling"}}
+    - "confirm the appointment" -> {{"type": "scheduling"}}
     - "i would like properties with smaller kitchen" -> {{"type": "property_inquiry"}}
     - "show me the properties with the lowest rent" -> {{"type": "top_n_inquiry"}}
     - "can I see a property tomorrow?" -> {{"type": "scheduling"}}
     - "what are the 3 biggest spaces?" -> {{"type": "top_n_inquiry"}}
     - "can you book a viewing?" -> {{"type": "scheduling"}}
-    - "what am i looking for?" -> {{"type": "personal_reflection"}}
+    - "what am i looking for?" -> {{"type": "general_chat"}}
 
     User Message: "{user_message}"
     """
@@ -437,7 +484,7 @@ async def classify_query(user_message: str) -> dict:
         
         data = json.loads(response_content)
         # --- NEW: Add a check to ensure the type is valid ---
-        valid_types = {"property_inquiry", "top_n_inquiry", "scheduling", "personal_reflection"}
+        valid_types = {"property_inquiry", "top_n_inquiry", "scheduling", "general_chat"}
         if data.get("type") in valid_types:
             print(f"[Query-Classifier] Classified as: {data}")
             return data
@@ -558,15 +605,25 @@ async def extract_schedule_details(user_message: str) -> dict:
     This function assumes the message is already classified as a scheduling request.
     """
     details_prompt = f"""
-    Analyze the user's message to extract the property address and the desired time for a viewing.
+    Analyze the user's message to extract scheduling details for a property viewing.
     The current date is {dt.date.today().isoformat()}.
 
-    Respond with ONLY a raw JSON object.
-    - If you find the address and time, use the keys "address" and "time".
-    - "address" must be the full property address mentioned.
-    - "time" must be the desired time converted into a full ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SS).
+    Look for:
+    1. Property address (street address, building name, or property identifier)
+    2. Desired date and time for the viewing
+    3. Any confirmation words like "yes", "confirm", "book it", etc.
 
-    If you cannot find BOTH an address and a time, return an empty JSON object: {{}}
+    Respond with ONLY a raw JSON object with these possible keys:
+    - "address": Full property address if mentioned
+    - "time": Desired time as ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SS) if mentioned
+    - "confirmation": true if the user is confirming a previously discussed appointment
+
+    Examples:
+    - "book 123 Main St for tomorrow at 2pm" -> {{"address": "123 Main St", "time": "2025-01-XX T14:00:00"}}
+    - "yes" or "confirm" -> {{"confirmation": true}}
+    - "I want to see a property" -> {{}}
+
+    If no specific details are found, return an empty JSON object: {{}}
 
     User Message: "{user_message}"
     """
