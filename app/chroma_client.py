@@ -64,23 +64,13 @@ class ChromaClientManager:
                     # Remote ChromaDB server with enhanced configuration
                     client = chromadb.HttpClient(
                         host=settings.CHROMA_HOST,
-                        port=settings.CHROMA_PORT,
-                        # Add timeout and other optimizations
-                        settings=chromadb.config.Settings(
-                            chroma_client_auth_provider="chromadb.auth.basic.BasicAuthClientProvider",
-                            chroma_client_auth_credentials_provider="chromadb.auth.basic.BasicAuthCredentialsProvider"
-                        ) if hasattr(chromadb, 'config') else None
+                        port=settings.CHROMA_PORT
                     )
                     logger.info(f"Connected to remote ChromaDB at {settings.CHROMA_HOST}:{settings.CHROMA_PORT}")
                 else:
                     # Local persistent ChromaDB with optimizations
                     client = chromadb.PersistentClient(
-                        path=settings.CHROMA_PERSIST_DIRECTORY,
-                        # Add performance settings if available
-                        settings=chromadb.config.Settings(
-                            anonymized_telemetry=False,
-                            allow_reset=True
-                        ) if hasattr(chromadb, 'config') else None
+                        path=settings.CHROMA_PERSIST_DIRECTORY
                     )
                     logger.info(f"Connected to local ChromaDB at {settings.CHROMA_PERSIST_DIRECTORY}")
                 
@@ -321,9 +311,13 @@ class ChromaClientManager:
             try:
                 if stats["document_count"] > 0:
                     sample = collection.peek(limit=3)
-                    stats["sample_document_count"] = len(sample.get("documents", []))
-                    stats["has_embeddings"] = len(sample.get("embeddings", [])) > 0
-                    stats["has_metadata"] = len(sample.get("metadatas", [])) > 0
+                    documents = sample.get("documents", [])
+                    embeddings = sample.get("embeddings", [])
+                    metadatas = sample.get("metadatas", [])
+                    
+                    stats["sample_document_count"] = len(documents) if documents else 0
+                    stats["has_embeddings"] = len(embeddings) > 0 if embeddings else False
+                    stats["has_metadata"] = len(metadatas) > 0 if metadatas else False
                 else:
                     stats["sample_document_count"] = 0
                     stats["has_embeddings"] = False
@@ -533,7 +527,8 @@ class BatchOperationContext:
         
         if collection_name in self.manager._collection_cache:
             # Update cache with fresh timestamp
-            self.manager._collection_cache[collection_name] = (self.collection, datetime.now())
+            if self.collection is not None:
+                self.manager._collection_cache[collection_name] = (self.collection, datetime.now())
 
 
 # Enhanced async context manager for async operations

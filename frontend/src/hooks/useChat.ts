@@ -8,6 +8,15 @@ interface Message {
   content: string;
 }
 
+export interface AppointmentDetails {
+  title: string;
+  location: string;
+  datetime: string;
+  duration: number;
+  attendees: string;
+  description?: string;
+}
+
 export const useChat = (userEmail: string | null) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
@@ -16,8 +25,8 @@ export const useChat = (userEmail: string | null) => {
     
     const [availableDocs, setAvailableDocs] = useState<string[]>([]);
     const [isAwaitingDocSelection, setIsAwaitingDocSelection] = useState(false);
+    const [appointmentToConfirm, setAppointmentToConfirm] = useState<AppointmentDetails | null>(null);
     
-    // This effect now correctly fetches documents for a logged-in user
     useEffect(() => {
         if (userEmail) {
             const fetchUserDocs = async () => {
@@ -36,10 +45,10 @@ export const useChat = (userEmail: string | null) => {
             };
             fetchUserDocs();
         } else {
-            // Reset all state on logout
             setMessages([]);
             setAvailableDocs([]);
             setIsAwaitingDocSelection(false);
+            setAppointmentToConfirm(null);
         }
     }, [userEmail]);
 
@@ -51,17 +60,16 @@ export const useChat = (userEmail: string | null) => {
 
                 if (data.status === 'success' || data.status === 'error' || data.status === 'idle') {
                     clearInterval(intervalId);
-                    toast.dismiss(); // Remove the "Loading..." toast
+                    toast.dismiss();
                     
                     if (data.status === 'success') {
                         toast.success(data.message || "Documents ready!");
-                        // After indexing, we can transition to the chat
                         setIsAwaitingDocSelection(false);
-                        fetchHistory(); // Fetch history to start chat
+                        fetchHistory();
                     } else {
                         toast.error(data.message || "Failed to load documents.");
                     }
-                    setIsIndexing(false); // Re-enable the chat input
+                    setIsIndexing(false);
                 }
             } catch (error) {
                 clearInterval(intervalId);
@@ -72,7 +80,6 @@ export const useChat = (userEmail: string | null) => {
         }, 3000);
     };
     
-    // --- NEW: Dedicated function to fetch chat history ---
     const fetchHistory = async () => {
         if (!userEmail) return;
 
@@ -87,7 +94,6 @@ export const useChat = (userEmail: string | null) => {
                     }));
                     setMessages(formattedHistory);
                 } else {
-                    // If user exists but has no history, show a fresh welcome message
                     setMessages([{ role: 'bot', content: `Hi! How can I help you today?` }]);
                 }
             } else {
@@ -123,12 +129,54 @@ export const useChat = (userEmail: string | null) => {
                 throw new Error(errorData.detail || 'Failed to get a response.');
             }
             const data = await response.json();
-            setMessages((prev) => [...prev, { role: 'bot', content: data.answer }]);
+            if (data.answer) {
+                setMessages((prev) => [...prev, { role: 'bot', content: data.answer }]);
+            }
+            if (data.appointment_details) {
+                setAppointmentToConfirm(data.appointment_details);
+            } else {
+                setAppointmentToConfirm(null);
+            }
         } catch (error) {
             setMessages((prev) => [...prev, { role: 'bot', content: `Error: ${(error as Error).message}` }]);
         } finally {
             setIsLoading(false);
         }
+    };
+
+    const handleConfirmAppointment = async () => {
+        if (!appointmentToConfirm || !userEmail) return;
+
+        setIsLoading(true);
+        try {
+            const response = await fetch(`${API_BASE_URL}/appointments/schedule`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: userEmail,
+                    ...appointmentToConfirm,
+                }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Failed to schedule appointment.');
+            }
+            const data = await response.json();
+            if (data.message) {
+                setMessages((prev) => [...prev, { role: 'bot', content: data.message }]);
+            }
+        } catch (error) {
+            toast.error(`Confirmation failed: ${(error as Error).message}`);
+            throw error;
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleCancelAppointment = () => {
+        setAppointmentToConfirm(null);
+        setMessages((prev) => [...prev, { role: 'bot', content: "Okay, I've cancelled the scheduling request." }]);
     };
     
     const loadSelectedDocuments = async (selectedDocs: string[]): Promise<boolean> => {
@@ -187,11 +235,14 @@ export const useChat = (userEmail: string | null) => {
         }
     };
 
-    // Make sure to export the new function
     return { 
         messages, setMessages, input, setInput, handleSendMessage, isLoading, isIndexing,
         availableDocs, isAwaitingDocSelection, setIsAwaitingDocSelection,
         loadSelectedDocuments, handleFileUpload,
-        fetchHistory // --- NEWLY EXPORTED
+        fetchHistory,
+        appointmentToConfirm,
+        setAppointmentToConfirm,
+        handleConfirmAppointment,
+        handleCancelAppointment,
     };
 };

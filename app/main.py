@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 # Add imports for Smart Property Recommendations
 from app.intent_detection import intent_detection_service
 from app.recommendation_workflow_manager import recommendation_workflow_manager
-
+from app.recommendation_endpoints import recommendation_router
 # Add imports for appointment booking at the top with other imports
 from app.appointment_intent_detection import appointment_intent_detection_service
 from app.appointment_workflow_manager import appointment_workflow_manager
@@ -300,33 +300,55 @@ async def chat(request: ChatRequest):
             # --- NEW: STEP 0A: APPOINTMENT BOOKING SESSION CHECK ---
             # First check if user has an existing appointment booking session
             existing_session_processed = False
+            session_expiry_minutes = 30
             if request.user_id:
                 try:
                     from app.database import get_database
-                    
-                    # Check for existing appointment sessions
+                    import datetime
                     db = get_database()
                     appointment_collection = db["appointment_sessions"]
-                    
+                    now = datetime.datetime.now()
+
+                    # Check for existing appointment sessions
                     existing_session = await appointment_collection.find_one({
                         "user_id": request.user_id,
                         "status": {"$in": ["collecting_info", "confirming"]}
                     })
-                    
+
+                    session_is_expired = False
+                    is_new_appointment_intent = False
+                    if existing_session:
+                        # Check if session is expired
+                        updated_at = existing_session.get("updated_at")
+                        if updated_at:
+                            if isinstance(updated_at, str):
+                                updated_at = datetime.datetime.fromisoformat(updated_at)
+                            session_is_expired = (now - updated_at).total_seconds() > session_expiry_minutes * 60
+                        # Check if this message is a new appointment intent
+                        try:
+                            appointment_intent = await appointment_intent_detection_service.detect_appointment_intent(request.message)
+                            is_new_appointment_intent = appointment_intent.is_appointment_request and appointment_intent.confidence > 0.6
+                        except Exception:
+                            is_new_appointment_intent = False
+                        # If expired or new intent, cancel old session
+                        if session_is_expired or is_new_appointment_intent:
+                            print(f"🗑️ Expiring/cancelling old appointment session {existing_session['_id']} for user {request.user_id}")
+                            try:
+                                await appointment_workflow_manager.cancel_appointment(existing_session["_id"])
+                            except Exception as e:
+                                print(f"⚠️ Error cancelling old session: {e}")
+                            existing_session = None
                     if existing_session:
                         session_id = existing_session["_id"]
                         print(f"📅 Found existing appointment session {session_id} for user {request.user_id}")
-                        
                         # Process this message as part of the existing workflow
                         workflow_response = await appointment_workflow_manager.process_user_response(
                             session_id,
                             request.message
                         )
-                        
                         if workflow_response.success:
                             print(f"✅ Processed appointment response: {workflow_response.step_name}")
                             existing_session_processed = True
-                            
                             # Save the conversation
                             if request.user_id:
                                 asyncio.create_task(history_module.add_message_to_history(
@@ -334,11 +356,29 @@ async def chat(request: ChatRequest):
                                     request.message, 
                                     workflow_response.message
                                 ))
-                            
-                            return ChatResponse(
-                                answer=workflow_response.message,
-                                schedule_details=None
-                            )
+                            # --- PATCH: Return appointment_details for frontend UI ---
+                            appointment_details = None
+                            ad = getattr(workflow_response, 'appointment_data', None)
+                            if ad is not None:
+                                appointment_details = {
+                                    'title': ad.title,
+                                    'location': ad.location,
+                                    'datetime': ad.date.strftime('%A, %B %d, %Y at %I:%M %p'),
+                                    'duration': ad.duration_minutes,
+                                    'attendees': ', '.join(ad.attendee_emails) if ad.attendee_emails else '',
+                                    'description': ad.description or ''
+                                }
+                            if appointment_details:
+                                return {
+                                    'answer': workflow_response.message,
+                                    'schedule_details': None,
+                                    'appointment_details': appointment_details
+                                }
+                            else:
+                                return ChatResponse(
+                                    answer=workflow_response.message,
+                                    schedule_details=None
+                                )
                         else:
                             print(f"⚠️ Failed to process appointment response: {workflow_response.message}")
                             existing_session_processed = True
@@ -347,7 +387,6 @@ async def chat(request: ChatRequest):
                                 answer=workflow_response.message,
                                 schedule_details=None
                             )
-                    
                 except Exception as e:
                     print(f"❌ Error checking existing appointment sessions: {e}")
                     # Fall through to new appointment detection
@@ -379,11 +418,29 @@ async def chat(request: ChatRequest):
                                     request.message, 
                                     workflow_response.message
                                 ))
-                            
-                            return ChatResponse(
-                                answer=workflow_response.message,
-                                schedule_details=None
-                            )
+                            # --- PATCH: Return appointment_details for frontend UI ---
+                            appointment_details = None
+                            ad = getattr(workflow_response, 'appointment_data', None)
+                            if ad is not None:
+                                appointment_details = {
+                                    'title': ad.title,
+                                    'location': ad.location,
+                                    'datetime': ad.date.strftime('%A, %B %d, %Y at %I:%M %p'),
+                                    'duration': ad.duration_minutes,
+                                    'attendees': ', '.join(ad.attendee_emails) if ad.attendee_emails else '',
+                                    'description': ad.description or ''
+                                }
+                            if appointment_details:
+                                return {
+                                    'answer': workflow_response.message,
+                                    'schedule_details': None,
+                                    'appointment_details': appointment_details
+                                }
+                            else:
+                                return ChatResponse(
+                                    answer=workflow_response.message,
+                                    schedule_details=None
+                                )
                         else:
                             print("⚠️ Appointment workflow failed to start properly, falling back to standard chat")
                     else:
@@ -2350,9 +2407,8 @@ async def confirm_appointment(session_id: str = Body(...)):
     Confirm an appointment booking.
     """
     print(f"📅 Confirming appointment for session {session_id}")
-    
     try:
-        workflow_response = await appointment_workflow_manager.confirm_appointment(session_id)
+        workflow_response = await appointment_workflow_manager.confirm_appointment_workflow(session_id)
         
         if workflow_response.success:
             print(f"✅ Appointment confirmed successfully")

@@ -49,7 +49,7 @@ class AppointmentIntentDetectionService:
         r"\bsend\s+(me\s+)?(a\s+)?(calendar\s+)?(invite|invitation)\b"
     ]
     
-    # Detail extraction patterns
+    # Detail extraction patterns - FIXED to prevent incorrect extractions
     DETAIL_PATTERNS = {
         'date': [
             r"\b(tomorrow|today|next week|this week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -58,21 +58,25 @@ class AppointmentIntentDetectionService:
         ],
         'time': [
             r"\b(\d{1,2}(:\d{2})?\s*(am|pm|AM|PM))\b",
-            r"\bat\s+(\d{1,2}(:\d{2})?\s*(am|pm|AM|PM)?)\b",
+            r"\bat\s+(\d{1,2}(:\d{2})?\s*(am|pm|AM|PM))\b",
             r"\b(morning|afternoon|evening|noon)\b"
         ],
         'location': [
-            r"\bat\s+(the\s+)?(office|building|location|address|room\s+\d+)\b",
-            r"\bin\s+(the\s+)?(conference room|meeting room|office)\b",
-            r"\bat\s+([A-Za-z0-9\s,.-]+(?:street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr))\b"
+            # More specific location patterns to avoid false matches
+            r"\bat\s+(?:the\s+)?(office|headquarters|building|boardroom|conference room)\b",
+            r"\bin\s+(?:the\s+)?(conference room|meeting room|office|boardroom)\b",
+            r"\bat\s+(\d+\s+[A-Za-z\s]+(?:street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr))\b",
+            r"\bat\s+([A-Z][A-Za-z\s,.-]{5,}(?:street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr))\b"
         ],
         'email': [
             r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
             r"\bwith\s+([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b"
         ],
         'title': [
-            r"\b(meeting|appointment|call|session)\s+(about|for|regarding)\s+(.+)",
-            r"\b(.+)\s+(meeting|appointment|call|session)\b"
+            # More specific title patterns to avoid false matches from trigger phrases
+            r"\b(meeting|appointment|call|session)\s+(about|for|regarding)\s+([A-Za-z\s]{3,})",
+            r"\b(discuss|review|talk about|go over)\s+([A-Za-z\s]{3,})",
+            r"\b([A-Za-z\s]{3,})\s+(consultation|interview|presentation|demo)\b"
         ]
     }
     
@@ -139,10 +143,26 @@ class AppointmentIntentDetectionService:
                 if matches:
                     if detail_type == 'email':
                         details[detail_type] = [match if isinstance(match, str) else match[0] for match in matches]
+                    elif detail_type == 'title':
+                        # Special handling for title to avoid generic appointment words
+                        match_value = matches[0] if isinstance(matches[0], str) else matches[0][0]
+                        # Filter out generic appointment trigger words
+                        generic_words = ['schedule', 'book', 'arrange', 'make', 'set up', 'an', 'a', 'the']
+                        if isinstance(match_value, str) and match_value.strip().lower() not in generic_words:
+                            details[detail_type] = match_value.strip()
                     else:
                         # Take the first match for single-value fields
                         match_value = matches[0] if isinstance(matches[0], str) else matches[0][0]
-                        details[detail_type] = match_value
+                        # Additional validation for location to avoid false matches
+                        if detail_type == 'location':
+                            # Don't accept single common words as locations
+                            if isinstance(match_value, str) and len(match_value.strip().split()) >= 1:
+                                # Avoid obvious false matches
+                                false_location_words = ['schedule', 'book', 'an', 'appointment', 'meeting', 'call']
+                                if match_value.strip().lower() not in false_location_words:
+                                    details[detail_type] = match_value.strip()
+                        else:
+                            details[detail_type] = match_value
                     break
         
         logger.info(f"Extracted appointment details: {details}")
@@ -154,13 +174,20 @@ class AppointmentIntentDetectionService:
         
         # Check for appointment trigger phrases
         trigger_matches = 0
+        strong_triggers = 0
         for pattern in self.APPOINTMENT_TRIGGERS:
             if re.search(pattern, message_lower):
                 trigger_matches += 1
+                # Some patterns are stronger indicators
+                if any(word in pattern for word in ["book", "schedule", "arrange", "make"]):
+                    strong_triggers += 1
         
-        # Base confidence from trigger patterns
+        # Base confidence from trigger patterns - increased for strong triggers
         if trigger_matches > 0:
-            base_confidence = min(0.8, 0.4 + (trigger_matches * 0.2))
+            if strong_triggers > 0:
+                base_confidence = min(0.9, 0.6 + (strong_triggers * 0.1))
+            else:
+                base_confidence = min(0.8, 0.4 + (trigger_matches * 0.2))
         else:
             base_confidence = 0.0
         
@@ -174,7 +201,7 @@ class AppointmentIntentDetectionService:
         
         total_confidence = min(1.0, base_confidence + detail_boost)
         
-        logger.debug(f"Pattern confidence: {total_confidence:.2f} (triggers: {trigger_matches}, detail_boost: {detail_boost:.1f})")
+        logger.debug(f"Pattern confidence: {total_confidence:.2f} (triggers: {trigger_matches}, strong: {strong_triggers}, detail_boost: {detail_boost:.1f})")
         return total_confidence
     
     async def _llm_intent_classification(self, message: str) -> float:

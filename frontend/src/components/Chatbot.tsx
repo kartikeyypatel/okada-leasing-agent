@@ -1,8 +1,15 @@
 "use client";
 import { useRef, useEffect, useState } from "react";
 import { useChat } from "../hooks/useChat";
-import { Paperclip, Send, MessageSquare, X, Bot, User as UserIcon, FileText, CheckSquare, Square } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { Paperclip, Send, MessageSquare, X, User as UserIcon, FileText, CheckSquare, Square } from "lucide-react";
+import { motion, AnimatePresence, useAnimation, easeInOut, easeOut } from "framer-motion";
+import AppointmentConfirmation from './AppointmentConfirmation';
+import { PureMultimodalInput } from "./ui/multimodal-ai-chat-input";
+import { ThemeSwitch } from "./ui/theme-switch-button";
+import { AIInputField } from "./ui/ai-input";
+import { StarBorder } from "./ui/star-border";
+import { Bot } from 'lucide-react';
+import { cn } from '../lib/utils';
 
 // --- TYPE DEFINITIONS ---
 interface User {
@@ -64,12 +71,131 @@ const DocumentSelectionView = ({ docs, onConfirm, onSkip }: DocSelectionViewProp
     );
 };
 
+// AnimatedChatIcon component
+const AnimatedChatIcon = ({
+  size = 32,
+  className = '',
+  onClick
+}: { size?: number; className?: string; onClick?: () => void }) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isIdle, setIsIdle] = useState(false);
+  const controls = useAnimation();
+  const idleTimeoutRef = useRef<number | null>(null);
+
+  const iconVariants = {
+    normal: { scale: 1, rotate: 0, y: 0 },
+    hover: { scale: 1.15, rotate: [0, -5, 5, -3, 3, 0], y: -2 },
+    idle: { scale: [1, 1.05, 1], y: [0, -3, 0] },
+    click: { scale: [1, 0.95, 1.1, 1], rotate: [0, -10, 10, 0] }
+  };
+  const glowVariants = {
+    normal: { opacity: 0, scale: 1 },
+    hover: { opacity: 0.6, scale: 1.3 },
+    idle: { opacity: [0, 0.4, 0], scale: [1, 1.2, 1] }
+  };
+  const pulseVariants = {
+    normal: { scale: 1, opacity: 0 },
+    pulse: { scale: [1, 1.8, 2.2], opacity: [0.8, 0.3, 0] }
+  };
+  const iconTransition = { duration: 0.6, ease: easeInOut };
+  const idleTransition = { duration: 2, ease: easeInOut, repeat: Infinity };
+  const pulseTransition = { duration: 1.5, ease: easeOut, repeat: Infinity, repeatDelay: 3 };
+
+  useEffect(() => {
+    const startIdleAnimation = () => {
+      idleTimeoutRef.current = window.setTimeout(() => {
+        if (!isHovered) {
+          setIsIdle(true);
+          controls.start('idle');
+        }
+      }, 3000);
+    };
+    const resetIdleTimer = () => {
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+      setIsIdle(false);
+      startIdleAnimation();
+    };
+    resetIdleTimer();
+    return () => { if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current); };
+  }, [isHovered, controls]);
+
+  const handleMouseEnter = () => { setIsHovered(true); setIsIdle(false); controls.start('hover'); };
+  const handleMouseLeave = () => { setIsHovered(false); controls.start('normal'); };
+  const handleClick = () => { controls.start('click'); onClick?.(); };
+
+  return (
+    <div className="relative">
+      {/* Pulse rings */}
+      <motion.div
+        className="absolute inset-0 rounded-full border-2 border-blue-400"
+        variants={pulseVariants}
+        animate="pulse"
+        transition={pulseTransition}
+        style={{
+          left: '50%',
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: size + 24,
+          height: size + 24,
+        }}
+      />
+      <motion.div
+        className="absolute inset-0 rounded-full border border-blue-300"
+        variants={pulseVariants}
+        animate="pulse"
+        transition={{ ...pulseTransition, delay: 0.3 }}
+        style={{
+          left: '50%',
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: size + 32,
+          height: size + 32,
+        }}
+      />
+      {/* Main button container */}
+      <motion.div
+        className={cn(
+          'relative cursor-pointer select-none rounded-full transition-all duration-300',
+          'bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-400 hover:to-blue-500',
+          'shadow-lg hover:shadow-xl shadow-blue-500/25 hover:shadow-blue-500/40',
+          'border border-blue-400/30 hover:border-blue-300/50',
+          'backdrop-blur-sm',
+          className
+        )}
+        style={{ padding: size * 0.4 }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        onClick={handleClick}
+        whileTap={{ scale: 0.95 }}
+      >
+        {/* Background glow */}
+        <motion.div
+          className="absolute inset-0 rounded-full bg-gradient-to-br from-blue-300/50 to-blue-500/50 blur-md"
+          variants={glowVariants}
+          animate={isHovered ? 'hover' : isIdle ? 'idle' : 'normal'}
+          transition={isIdle ? idleTransition : iconTransition}
+        />
+        {/* Icon */}
+        <motion.div
+          className="relative z-10 flex items-center justify-center text-white"
+          variants={iconVariants}
+          animate={controls}
+          transition={iconTransition}
+        >
+          <Bot size={size} />
+        </motion.div>
+      </motion.div>
+    </div>
+  );
+};
+
 // --- MAIN CHATBOT COMPONENT ---
 const Chatbot = ({ currentUser, openAuthModal }: ChatbotProps) => {
   const { 
     messages, setMessages, input, setInput, handleSendMessage, isLoading, isIndexing, 
     availableDocs, isAwaitingDocSelection, setIsAwaitingDocSelection, 
-    loadSelectedDocuments, handleFileUpload, fetchHistory // <-- NEWLY IMPORTED
+    loadSelectedDocuments, handleFileUpload, fetchHistory, 
+    appointmentToConfirm, handleConfirmAppointment, handleCancelAppointment
   } = useChat(currentUser?.email || null);
 
   const [isOpen, setIsOpen] = useState(false);
@@ -77,7 +203,6 @@ const Chatbot = ({ currentUser, openAuthModal }: ChatbotProps) => {
   const chatBoxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Automatically open the chatbot window if the app determines we need to select documents
     if (isAwaitingDocSelection && !isOpen) {
       setIsOpen(true);
     }
@@ -96,28 +221,23 @@ const Chatbot = ({ currentUser, openAuthModal }: ChatbotProps) => {
 
 useEffect(() => {
     if (chatBoxRef.current) {
-      // Use setTimeout to ensure the scroll happens after the DOM has fully updated
       setTimeout(() => {
         chatBoxRef.current!.scrollTop = chatBoxRef.current!.scrollHeight;
       }, 0);
     }
   }, [messages, isOpen]);
 
-  // --- THIS IS THE FIX ---
-  // This function now fetches the history AFTER loading the documents.
   const onConfirmDocSelection = async (selectedDocs: string[]) => {
       const success = await loadSelectedDocuments(selectedDocs);
       if (success) {
           setIsAwaitingDocSelection(false);
-          // Instead of a generic message, now we fetch the real history.
           fetchHistory();
       }
   };
 
-    // --- NEW: Function to handle skipping document selection ---
   const onSkipDocSelection = () => {
-      setIsAwaitingDocSelection(false); // Hide the selection screen
-      fetchHistory(); // Fetch history to start the general chat
+      setIsAwaitingDocSelection(false);
+      fetchHistory();
   };
 
   const handleOpenChat = () => {
@@ -134,26 +254,57 @@ useEffect(() => {
     }
   };
 
+  const typicalQuestions = [
+    "Lease terms?",
+    "Schedule tour",
+    "Required docs",
+    "Utilities included?"
+  ];
+
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const chatId = "main-chat"; // or your actual chat/session id
+
+  const handleStopGenerating = () => {
+    setIsGenerating(false);
+  };
+
+  const handleQuickQuestion = (question: string) => {
+    handleSendMessage(question);
+  };
+
   return (
     <>
-<AnimatePresence>
+      {appointmentToConfirm && (
+        <AppointmentConfirmation 
+            appointment={appointmentToConfirm}
+            onConfirm={handleConfirmAppointment}
+            onCancel={handleCancelAppointment}
+            isLoading={isLoading}
+        />
+      )}
+
+      <AnimatePresence>
         {isOpen && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
             transition={{ duration: 0.3 }}
-            className="fixed bottom-24 right-5 w-[90vw] max-w-md h-[70vh] max-h-[600px] bg-white rounded-xl shadow-2xl flex flex-col z-50"
+            className="fixed bottom-24 right-5 w-[90vw] max-w-md h-[70vh] max-h-[600px] bg-white dark:bg-gray-900 rounded-xl shadow-2xl flex flex-col z-50 text-black dark:text-white"
           >
-            <div className="flex items-center justify-between p-3 border-b border-gray-200 bg-gray-50 rounded-t-xl">
+            <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 rounded-t-xl">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center"><Bot size={22} className="text-gray-600"/></div>
+                <div className="w-10 h-10 bg-gray-200 dark:bg-gray-700 rounded-full flex items-center justify-center"><Bot size={22} className="text-gray-600 dark:text-gray-200"/></div>
                 <div>
                   <h2 className="font-semibold text-base">Okada IntelliAgent</h2>
-                  <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-green-500 rounded-full"></div><p className="text-xs text-gray-500">Online</p></div>
+                  <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-green-500 rounded-full"></div><p className="text-xs text-gray-500 dark:text-gray-300">Online</p></div>
                 </div>
               </div>
-              <button onClick={() => setIsOpen(false)} className="text-gray-500 hover:text-gray-900" title="Close Chat"><X size={20} /></button>
+              <div className="flex items-center gap-2">
+                <ThemeSwitch className="mr-1" />
+                <button onClick={() => setIsOpen(false)} className="text-gray-500 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white" title="Close Chat"><X size={20} /></button>
+              </div>
             </div>
             
             {isAwaitingDocSelection ? (
@@ -163,24 +314,38 @@ useEffect(() => {
                 <div ref={chatBoxRef} className="flex-1 p-4 overflow-y-auto">
                     {messages.map((msg, index) => (
                         <div key={index} className={`flex items-end gap-2 my-3 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                            <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center ${msg.role === 'bot' ? 'bg-gray-200' : 'bg-blue-100'}`}>
-                                {msg.role === 'bot' ? <Bot size={18} className="text-gray-600"/> : <UserIcon size={18} className="text-blue-600"/>}
+                            <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center ${msg.role === 'bot' ? 'bg-gray-200 dark:bg-gray-700' : 'bg-blue-100 dark:bg-blue-900'}`}>
+                                {msg.role === 'bot' ? <Bot size={18} className="text-gray-600 dark:text-gray-200"/> : <UserIcon size={18} className="text-blue-600 dark:text-blue-300"/>}
                             </div>
-                            <div className={`py-2 px-4 rounded-2xl max-w-[80%] whitespace-pre-wrap ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-gray-200 text-gray-900 rounded-bl-none'}`}>
+                            <div className={`py-2 px-4 rounded-2xl max-w-[80%] whitespace-pre-wrap ${msg.role === 'user' ? 'bg-blue-600 dark:bg-blue-900 text-white' : 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-white'} ${msg.role === 'user' ? 'rounded-br-none' : 'rounded-bl-none'}`}>
                                 {msg.content}
                             </div>
                         </div>
                     ))}
-                    {isLoading && ( <div className="flex items-end gap-2 my-3 flex-row"><div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center bg-gray-200"><Bot size={18} className="text-gray-600"/></div><div className="py-2 px-4 rounded-2xl bg-gray-200"><div className="flex items-center gap-1"><span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span><span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]"></span><span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]"></span></div></div></div> )}
+                    {isLoading && ( <div className="flex items-end gap-2 my-3 flex-row"><div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center bg-gray-200 dark:bg-gray-700"><Bot size={18} className="text-gray-600 dark:text-gray-200"/></div><div className="py-2 px-4 rounded-2xl bg-gray-200 dark:bg-gray-800"><div className="flex items-center gap-1"><span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span><span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.1s]"></span><span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]"></span></div></div></div> )}
                 </div>
 
                 <div className="p-4 border-t border-gray-200">
-                  <form onSubmit={(e) => { e.preventDefault(); handleSendMessage(input); setInput(''); }} className="relative">
-                    <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder={isIndexing ? "Processing documents..." : "Type your message..."} className="w-full py-2 pl-10 pr-12 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100" autoComplete="off" disabled={isLoading || isIndexing || !currentUser} />
-                    <button type="button" onClick={() => fileInputRef.current?.click()} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-blue-600 disabled:cursor-not-allowed" disabled={isLoading || isIndexing || !currentUser}><Paperclip size={20} /></button>
-                    <input ref={fileInputRef} type="file" onChange={onFileUpload} accept=".csv,.pdf" className="hidden" />
-                    <button type="submit" className="absolute right-2 top-1/2 -translate-y-1/2 bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center hover:bg-blue-700 disabled:bg-gray-400" disabled={isLoading || !input || !currentUser}><Send size={16} /></button>
-                  </form>
+                  {/* Quick actions */}
+                  <div className="grid grid-cols-2 gap-1 mb-2">
+                    {typicalQuestions.map((q, i) => (
+                      <StarBorder
+                        as="button"
+                        key={i}
+                        className="w-full h-8 px-1 py-0.5 text-[11px] font-medium truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 transition-colors"
+                        onClick={() => handleQuickQuestion(q)}
+                        tabIndex={0}
+                      >
+                        {q}
+                      </StarBorder>
+                    ))}
+                  </div>
+                  {/* Animated AI input */}
+                  <AIInputField 
+                    onSendMessage={handleSendMessage}
+                    onFileUpload={(files) => files.forEach(handleFileUpload)}
+                    isLoading={isLoading}
+                  />
                 </div>
               </>
             )}
@@ -188,9 +353,9 @@ useEffect(() => {
         )}
       </AnimatePresence>
 
-      <button onClick={handleOpenChat} className="fixed bottom-5 right-5 bg-blue-600 text-white w-14 h-14 rounded-full flex items-center justify-center shadow-lg hover:scale-110 transition-transform z-40" title="Toggle Chat">
-        <MessageSquare size={28} />
-      </button>
+      <div className="fixed bottom-5 right-5 z-40">
+        <AnimatedChatIcon size={40} onClick={handleOpenChat} />
+      </div>
     </>
   );
 };

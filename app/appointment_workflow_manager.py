@@ -77,7 +77,12 @@ class AppointmentWorkflowManager:
             await self._save_session(session)
             
             # Generate next step in workflow
-            return await self._get_next_workflow_step(session)
+            workflow_response = await self._get_next_workflow_step(session)
+            
+            # --- PATCH: Always include appointment_data in response ---
+            workflow_response.appointment_data = appointment_data
+            
+            return workflow_response
             
         except Exception as e:
             logger.error(f"Error starting appointment booking: {e}")
@@ -131,9 +136,23 @@ class AppointmentWorkflowManager:
             
             # Save updated session
             await self._save_session(session)
-            
+
+            # IMMEDIATE CONFIRM/CANCEL PATCH
+            if getattr(session.collected_data, 'confirmation_response', None) == "confirmed":
+                logger.info(f"Immediate confirmation after user response.")
+                return await self._confirm_appointment_internal(session)
+            if getattr(session.collected_data, 'confirmation_response', None) == "cancelled":
+                logger.info(f"Immediate cancellation after user response.")
+                return await self._cancel_appointment_internal(session)
+            # END PATCH
+
             # Determine next step
-            return await self._get_next_workflow_step(session)
+            workflow_response = await self._get_next_workflow_step(session)
+            
+            # --- PATCH: Always include appointment_data in response ---
+            workflow_response.appointment_data = session.collected_data
+            
+            return workflow_response
             
         except Exception as e:
             logger.error(f"Error processing user response: {e}")
@@ -242,56 +261,48 @@ class AppointmentWorkflowManager:
             animations=animations
         )
     
-    async def confirm_appointment(self, session_id: str) -> WorkflowResponse:
+    async def confirm_appointment_workflow(self, session_id: str) -> WorkflowResponse:
         """
-        Confirm and create the appointment.
-        
+        Handles the final confirmation step of the appointment booking process.
+
         Args:
-            session_id: Session ID to confirm
-            
+            session_id: The ID of the appointment session to confirm.
+
         Returns:
-            WorkflowResponse with confirmation result
+            A WorkflowResponse indicating the result of the confirmation.
         """
-        logger.info(f"Confirming appointment for session {session_id}")
-        
+        logger.info(f"Executing confirmation for session: {session_id}")
         try:
             session = await self._load_session(session_id)
             if not session:
                 return WorkflowResponse(
                     success=False,
-                    message="Appointment session not found.",
+                    message="Sorry, I couldn't find your appointment session.",
                     error_details=AppointmentError(
                         error_type="SESSION_NOT_FOUND",
-                        message="Session not found"
+                        message="Session not found during confirmation."
                     )
                 )
-            
-            # Update session status
+
+            # Mark the session as confirmed
             session.status = AppointmentStatus.CONFIRMED
             session.updated_at = datetime.now()
-            
-            # This would integrate with Google Calendar and Meet services
-            # For now, we'll mark it as confirmed
-            appointment = session.collected_data
-            
-            # Save updated session
             await self._save_session(session)
-            
-            # Generate success message
+
+            # Generate a final confirmation message
+            appointment = session.collected_data
             formatted_date = appointment.date.strftime("%A, %B %d, %Y at %I:%M %p")
             success_message = f"""
 🎉 **Appointment Confirmed!**
 
-Your appointment has been successfully scheduled:
+Your appointment is set:
+- **Title:** {appointment.title}
+- **Location:** {appointment.location}
+- **Time:** {formatted_date}
 
-📋 **{appointment.title}**
-📍 **Location:** {appointment.location}
-🕐 **Date & Time:** {formatted_date}
-⏱️ **Duration:** {appointment.duration_minutes} minutes
-
-You will receive a calendar invitation shortly with all the details and a Google Meet link for the meeting.
+A calendar invitation with a Google Meet link is on its way to you.
             """.strip()
-            
+
             return WorkflowResponse(
                 success=True,
                 message=success_message,
@@ -299,12 +310,11 @@ You will receive a calendar invitation shortly with all the details and a Google
                 step_name="appointment_confirmed",
                 appointment_data=appointment
             )
-            
         except Exception as e:
-            logger.error(f"Error confirming appointment: {e}")
+            logger.error(f"Error during explicit confirmation for session {session_id}: {e}")
             return WorkflowResponse(
                 success=False,
-                message="Sorry, there was an issue confirming your appointment. Please try again.",
+                message="I encountered an unexpected error while confirming your appointment. Please try again.",
                 error_details=AppointmentError(
                     error_type="CONFIRMATION_ERROR",
                     message=str(e)
@@ -374,7 +384,8 @@ You will receive a calendar invitation shortly with all the details and a Google
                 message=question,
                 session_id=session.session_id,
                 step_name="collecting_information",
-                next_step=missing_fields[0]
+                next_step=missing_fields[0],
+                appointment_data=session.collected_data  # --- PATCH: Include appointment_data ---
             )
         else:
             # Ready for confirmation
@@ -397,18 +408,32 @@ Would you like me to confirm this appointment?
                 message=confirmation_message,
                 session_id=session.session_id,
                 step_name="awaiting_confirmation",
-                ui_components=confirmation_ui
+                ui_components=confirmation_ui,
+                appointment_data=session.collected_data  # --- PATCH: Include appointment_data ---
             )
     
     def _apply_extracted_details(self, appointment_data: AppointmentData, extracted_details: Dict[str, Any]):
         """Apply extracted details to appointment data."""
         
-        if 'location' in extracted_details:
-            appointment_data.location = extracted_details['location']
+        # Only apply location if it's a meaningful value
+        if 'location' in extracted_details and extracted_details['location']:
+            location = extracted_details['location'].strip()
+            # Validate that location is meaningful (not empty, not generic words)
+            generic_location_words = ['schedule', 'book', 'an', 'appointment', 'meeting', 'call', 'session']
+            if location and location.lower() not in generic_location_words and len(location) > 2:
+                appointment_data.location = location
         
-        if 'title' in extracted_details:
-            appointment_data.title = extracted_details['title']
+        # Only apply title if it's a meaningful value (don't override default "Meeting")
+        if 'title' in extracted_details and extracted_details['title']:
+            title = extracted_details['title'].strip()
+            # Validate that title is meaningful
+            generic_title_words = ['schedule', 'book', 'an', 'a', 'the', 'appointment', 'meeting', 'call', 'session']
+            if title and title.lower() not in generic_title_words and len(title) > 2:
+                # Additional check: make sure it's not just generic appointment words
+                if not any(word in title.lower() for word in ['schedule an', 'book an', 'make an']):
+                    appointment_data.title = title
         
+        # Apply email addresses
         if 'email' in extracted_details:
             emails = extracted_details['email']
             if isinstance(emails, list):
@@ -598,7 +623,8 @@ Would you like me to confirm this appointment?
                     "description": session.collected_data.description,
                     "meet_link": session.collected_data.meet_link,
                     "calendar_event_id": session.collected_data.calendar_event_id,
-                    "organizer_email": session.collected_data.organizer_email
+                    "organizer_email": session.collected_data.organizer_email,
+                    "confirmation_response": getattr(session.collected_data, "confirmation_response", None)
                 },
                 "missing_fields": session.missing_fields,
                 "created_at": session.created_at.isoformat(),
@@ -638,7 +664,8 @@ Would you like me to confirm this appointment?
                 description=data_dict.get("description"),
                 meet_link=data_dict.get("meet_link"),
                 calendar_event_id=data_dict.get("calendar_event_id"),
-                organizer_email=data_dict.get("organizer_email")
+                organizer_email=data_dict.get("organizer_email"),
+                confirmation_response=data_dict.get("confirmation_response")  # <-- FIX: restore confirmation_response
             )
             
             # Reconstruct AppointmentSession
@@ -661,17 +688,34 @@ Would you like me to confirm this appointment?
 
     async def _confirm_appointment_internal(self, session: AppointmentSession) -> WorkflowResponse:
         """Internal method to confirm appointment and update session."""
-        
+        import app.calendar as calendar
+        import logging
+        logger = logging.getLogger(__name__)
         # Update session status
         session.status = AppointmentStatus.CONFIRMED
         session.updated_at = datetime.now()
-        
+        # Clear confirmation_response to prevent infinite loop
+        session.collected_data.confirmation_response = None
         # Save updated session
         await self._save_session(session)
-        
         # Generate success message
         appointment = session.collected_data
         formatted_date = appointment.date.strftime("%A, %B %d, %Y at %I:%M %p")
+        # --- PATCH: Always schedule calendar event and log data ---
+        calendar_event_url = None
+        calendar_error = None
+        try:
+            logger.info(f"[Calendar] Scheduling event for user: {appointment.organizer_email}, location: {appointment.location}, time: {appointment.date.isoformat()}")
+            calendar_event_url = calendar.schedule_viewing(
+                user_email=appointment.organizer_email if appointment.organizer_email is not None else "",
+                property_address=appointment.location,
+                time_str=appointment.date.isoformat()
+            )
+            logger.info(f"[Calendar] Event created: {calendar_event_url}")
+        except Exception as e:
+            logger.error(f"[Calendar] Error scheduling event: {e}")
+            calendar_error = str(e)
+        # --- END PATCH ---
         success_message = f"""
 🎉 **Appointment Confirmed!**
 
@@ -681,10 +725,11 @@ Your appointment has been successfully scheduled:
 📍 **Location:** {appointment.location}
 🕐 **Date & Time:** {formatted_date}
 ⏱️ **Duration:** {appointment.duration_minutes} minutes
-
-You will receive a calendar invitation shortly with all the details and a Google Meet link for the meeting.
-        """.strip()
-        
+""".strip()
+        if calendar_event_url:
+            success_message += f"\n\n[View in Google Calendar]({calendar_event_url})"
+        elif calendar_error:
+            success_message += f"\n\n⚠️ There was an issue creating the calendar event: {calendar_error}\nPlease add this appointment manually to your calendar."
         return WorkflowResponse(
             success=True,
             message=success_message,
@@ -699,6 +744,8 @@ You will receive a calendar invitation shortly with all the details and a Google
         # Update session status
         session.status = AppointmentStatus.CANCELLED
         session.updated_at = datetime.now()
+        # Clear confirmation_response to prevent infinite loop
+        session.collected_data.confirmation_response = None
         
         # Save updated session
         await self._save_session(session)
