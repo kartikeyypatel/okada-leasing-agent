@@ -82,18 +82,10 @@ ls -la ./user_chroma_db/
 - Users unable to index documents
 
 **Solutions:**
-```python
-# Manual collection creation
-from app.chroma_client import chroma_manager
-import asyncio
-
-async def create_collection_manually():
-    client = await asyncio.to_thread(chroma_manager.get_client)
-    collection = await asyncio.to_thread(client.create_collection, "test_collection")
-    print(f"Collection created: {collection.name}")
-
-asyncio.run(create_collection_manually())
-```
+- Check that your CSV files are properly formatted
+- Ensure the user_documents directory exists and has proper permissions
+- Restart the application to clear any cached errors
+- Check the application logs for specific error messages
 
 ## Performance Problems
 
@@ -267,19 +259,22 @@ asyncio.run(check_user_documents("user@example.com"))
 
 1. **Verify Collection Isolation:**
    ```python
-   # Check collection names
-   from app.chroma_client import chroma_manager
-   import hashlib
+   # Check user isolation by verifying different users have different data
+   from app.rag import get_user_index
+   import asyncio
    
-   def get_collection_name(user_id):
-       hash_value = hashlib.md5(user_id.encode()).hexdigest()
-       return f"okada_user_{hash_value}"
+   async def check_user_isolation():
+       user1_index = await get_user_index("user1@example.com")
+       user2_index = await get_user_index("user2@example.com")
+       
+       print(f"User1 has index: {user1_index is not None}")
+       print(f"User2 has index: {user2_index is not None}")
+       
+       # Verify they are different objects
+       if user1_index and user2_index:
+           print(f"Indexes are isolated: {user1_index is not user2_index}")
    
-   # Verify different users have different collections
-   user1_collection = get_collection_name("user1@example.com")
-   user2_collection = get_collection_name("user2@example.com")
-   print(f"User1 collection: {user1_collection}")
-   print(f"User2 collection: {user2_collection}")
+   asyncio.run(check_user_isolation())
    ```
 
 2. **Reset User Data:**

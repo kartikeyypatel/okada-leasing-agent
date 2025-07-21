@@ -26,7 +26,7 @@ function App() {
         return;
     }
     try {
-        const response = await fetch(`${API_BASE_URL}/user?email=${encodeURIComponent(email)}`);
+        const response = await fetch(`${API_BASE_URL}/users/${encodeURIComponent(email)}`);
         if (response.status === 404) {
             toast.error("User not found. Please sign up first.");
             return;
@@ -49,7 +49,7 @@ function App() {
         return;
     }
     try {
-        const response = await fetch(`${API_BASE_URL}/user`, {
+        const response = await fetch(`${API_BASE_URL}/users`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ full_name: fullName, email: email, company_name: companyName }),
@@ -82,7 +82,7 @@ function App() {
     if (!currentUser) return;
     if (window.confirm("Are you sure you want to delete your account? This will permanently erase your data.")) {
         try {
-            const response = await fetch(`${API_BASE_URL}/user?email=${encodeURIComponent(currentUser.email)}`, { method: 'DELETE' });
+            const response = await fetch(`${API_BASE_URL}/users/${encodeURIComponent(currentUser.email)}`, { method: 'DELETE' });
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.detail || "Failed to delete account.");
@@ -98,7 +98,7 @@ function App() {
   const updateUser = async (fullName: string, companyName: string) => {
       if (!currentUser) return;
       try {
-            const response = await fetch(`${API_BASE_URL}/user`, {
+            const response = await fetch(`${API_BASE_URL}/users`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: currentUser.email, full_name: fullName, company_name: companyName }),

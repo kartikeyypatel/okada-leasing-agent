@@ -3,11 +3,11 @@ import os
 import pandas as pd
 import asyncio
 import logging
-import hashlib
 from llama_index.core import (
     VectorStoreIndex,
     Settings,
     Document,
+    StorageContext,
 )
 from llama_index.core.retrievers import QueryFusionRetriever, BaseRetriever
 from llama_index.core.retrievers.fusion_retriever import FUSION_MODES
@@ -18,21 +18,378 @@ from llama_index.core.schema import NodeWithScore
 from llama_index.core import QueryBundle
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from typing import List, Optional, Dict
+import json
+from PyPDF2 import PdfReader
+import chromadb
 
 from app.config import settings
-from app.chroma_client import chroma_manager
-from app.multi_strategy_search import multi_strategy_search, MultiStrategySearchResult
-from app.error_handler import error_handling_context, ErrorContext, ErrorCategory
-
-# Import performance monitoring
-try:
-    from app.performance_monitor import performance_monitor, monitor_performance, OperationType
-    PERFORMANCE_MONITORING_AVAILABLE = True
-except ImportError:
-    PERFORMANCE_MONITORING_AVAILABLE = False
-    performance_monitor = None
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_collection_name(user_id: str) -> str:
+    """
+    Sanitize user ID to create a valid Chroma collection name.
+    Chroma requires names with 3-512 characters from [a-zA-Z0-9._-], 
+    starting and ending with [a-zA-Z0-9].
+    """
+    import re
+    import hashlib
+    
+    # Replace invalid characters with underscores
+    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', user_id)
+    
+    # Ensure it starts and ends with alphanumeric
+    sanitized = re.sub(r'^[^a-zA-Z0-9]+', '', sanitized)
+    sanitized = re.sub(r'[^a-zA-Z0-9]+$', '', sanitized)
+    
+    # If the sanitized name is too short or empty, use a hash
+    if len(sanitized) < 3:
+        hash_obj = hashlib.md5(user_id.encode())
+        sanitized = f"user_{hash_obj.hexdigest()[:8]}"
+    
+    # Ensure it's not too long (max 512 chars, but we'll keep it reasonable)
+    if len(sanitized) > 50:
+        hash_obj = hashlib.md5(user_id.encode())
+        sanitized = f"{sanitized[:40]}_{hash_obj.hexdigest()[:8]}"
+    
+    return sanitized
+
+
+def sanitize_collection_name(user_id: str) -> str:
+    """
+    Sanitize user ID to create a valid Chroma collection name.
+    Chroma requires names with 3-512 characters from [a-zA-Z0-9._-], 
+    starting and ending with [a-zA-Z0-9].
+    """
+    import re
+    import hashlib
+    
+    # Replace invalid characters with underscores
+    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', user_id)
+    
+    # Ensure it starts and ends with alphanumeric
+    sanitized = re.sub(r'^[^a-zA-Z0-9]+', '', sanitized)
+    sanitized = re.sub(r'[^a-zA-Z0-9]+$', '', sanitized)
+    
+    # If the sanitized name is too short or empty, use a hash
+    if len(sanitized) < 3:
+        hash_obj = hashlib.md5(user_id.encode())
+        sanitized = f"user_{hash_obj.hexdigest()[:8]}"
+    
+    # Ensure it's not too long (max 512 chars, but we'll keep it reasonable)
+    if len(sanitized) > 50:
+        hash_obj = hashlib.md5(user_id.encode())
+        sanitized = f"{sanitized[:40]}_{hash_obj.hexdigest()[:8]}"
+    
+    return sanitized
+
+
+async def create_enhanced_csv_embeddings(df: pd.DataFrame, file_path: str, user_id: str) -> List[Document]:
+    """
+    Create enhanced text embeddings for CSV data by converting rows to descriptive text.
+    This improves RAG performance by making CSV data more searchable and contextual.
+    """
+    documents = []
+    file_name = os.path.basename(file_path)
+    
+    # Analyze the CSV structure to create better text representations
+    columns = df.columns.tolist()
+    
+    # Detect if this looks like a property listing CSV based on common column names
+    property_indicators = ['address', 'rent', 'size', 'floor', 'suite', 'building', 'price', 'sqft', 'square']
+    is_property_data = any(any(indicator in col.lower() for indicator in property_indicators) for col in columns)
+    
+    logger.info(f"Processing CSV {file_name} with {len(df)} rows and {len(columns)} columns")
+    logger.info(f"Detected as property data: {is_property_data}")
+    
+    for index, row in df.iterrows():
+        try:
+            # Create multiple text representations for better embedding
+            
+            # 1. Structured description format
+            structured_text = create_structured_description(row, columns, is_property_data)
+            
+            # 2. Natural language description
+            natural_text = create_natural_language_description(row, columns, is_property_data)
+            
+            # 3. JSON format for exact matching
+            json_text = create_json_representation(row)
+            
+            # 4. Key-value pairs for specific searches
+            kv_text = create_key_value_representation(row)
+            
+            # Create more concise text for faster embedding (performance optimization)
+            combined_text = f"{structured_text}\n{natural_text}".strip()
+            
+            # Create simplified metadata (fix Chroma metadata error)
+            metadata = {
+                "user_id": str(user_id),
+                "file_name": str(file_name),
+                "row_index": int(index),
+                "data_type": "property" if is_property_data else "general"
+            }
+            
+            # Add only essential metadata as strings/numbers (Chroma requirement)
+            essential_fields = ['address', 'rent', 'size', 'floor', 'suite']
+            for field in essential_fields:
+                if field in row.index and pd.notna(row[field]):
+                    clean_key = str(field).lower().replace(" ", "_").replace("-", "_")
+                    value = row[field]
+                    # Ensure metadata values are str, int, float, or None
+                    if isinstance(value, (str, int, float)):
+                        metadata[clean_key] = value
+                    else:
+                        metadata[clean_key] = str(value)
+            
+            # Create the document
+            doc = Document(
+                text=combined_text,
+                doc_id=f"{file_name}_row_{index}_{user_id}",
+                metadata=metadata
+            )
+            documents.append(doc)
+            
+            # Skip focused documents completely for maximum performance
+            # Focused documents are disabled to optimize retrieval speed
+                
+        except Exception as e:
+            logger.error(f"Error processing row {index} in {file_name}: {e}")
+            continue
+    
+    logger.info(f"Created {len(documents)} enhanced embedding documents from {file_name}")
+    return documents
+
+
+def create_structured_description(row: pd.Series, columns: List[str], is_property_data: bool) -> str:
+    """Create a structured description of the row data."""
+    if is_property_data:
+        return create_property_structured_description(row)
+    else:
+        return create_general_structured_description(row, columns)
+
+
+def create_property_structured_description(row: pd.Series) -> str:
+    """Create a structured description specifically for property data."""
+    parts = []
+    
+    # Address/Location
+    address_fields = ['address', 'building_address', 'location', 'building_name']
+    for field in address_fields:
+        if field in row.index and pd.notna(row[field]):
+            parts.append(f"Property Address: {row[field]}")
+            break
+    
+    # Floor and Suite
+    floor_fields = ['floor', 'floor_number', 'level']
+    suite_fields = ['suite', 'suite_number', 'unit', 'unit_number']
+    
+    for field in floor_fields:
+        if field in row.index and pd.notna(row[field]):
+            parts.append(f"Floor: {row[field]}")
+            break
+            
+    for field in suite_fields:
+        if field in row.index and pd.notna(row[field]):
+            parts.append(f"Suite: {row[field]}")
+            break
+    
+    # Size
+    size_fields = ['size', 'square_feet', 'sqft', 'area', 'sf']
+    for field in size_fields:
+        if field in row.index and pd.notna(row[field]):
+            parts.append(f"Size: {row[field]} square feet")
+            break
+    
+    # Rent/Price
+    rent_fields = ['rent', 'monthly_rent', 'price', 'monthly_price', 'cost']
+    for field in rent_fields:
+        if field in row.index and pd.notna(row[field]):
+            value = str(row[field])
+            if not value.startswith('$'):
+                value = f"${value}"
+            parts.append(f"Monthly Rent: {value}")
+            break
+    
+    # Additional important fields
+    important_fields = ['availability', 'status', 'type', 'property_type', 'amenities', 'features']
+    for field in important_fields:
+        if field in row.index and pd.notna(row[field]):
+            parts.append(f"{field.replace('_', ' ').title()}: {row[field]}")
+    
+    return " | ".join(parts) if parts else "Property information available"
+
+
+def create_general_structured_description(row: pd.Series, columns: List[str]) -> str:
+    """Create a structured description for general CSV data."""
+    parts = []
+    for col in columns[:10]:  # Limit to first 10 columns to avoid too long text
+        if pd.notna(row[col]) and str(row[col]).strip():
+            parts.append(f"{col}: {row[col]}")
+    return " | ".join(parts)
+
+
+def create_natural_language_description(row: pd.Series, columns: List[str], is_property_data: bool) -> str:
+    """Create a natural language description of the row data."""
+    if is_property_data:
+        return create_property_natural_description(row)
+    else:
+        return create_general_natural_description(row, columns)
+
+
+def create_property_natural_description(row: pd.Series) -> str:
+    """Create a natural language description for property data."""
+    description_parts = []
+    
+    # Start with property type or generic
+    prop_type = None
+    type_fields = ['type', 'property_type', 'space_type']
+    for field in type_fields:
+        if field in row.index and pd.notna(row[field]):
+            prop_type = str(row[field]).lower()
+            break
+    
+    if prop_type:
+        description_parts.append(f"This is a {prop_type}")
+    else:
+        description_parts.append("This property")
+    
+    # Add location
+    address_fields = ['address', 'building_address', 'location']
+    for field in address_fields:
+        if field in row.index and pd.notna(row[field]):
+            description_parts.append(f"located at {row[field]}")
+            break
+    
+    # Add floor and suite info
+    floor_info = []
+    if 'floor' in row.index and pd.notna(row['floor']):
+        floor_info.append(f"on floor {row['floor']}")
+    if 'suite' in row.index and pd.notna(row['suite']):
+        floor_info.append(f"suite {row['suite']}")
+    
+    if floor_info:
+        description_parts.append(", ".join(floor_info))
+    
+    # Add size information
+    size_fields = ['size', 'square_feet', 'sqft', 'area']
+    for field in size_fields:
+        if field in row.index and pd.notna(row[field]):
+            description_parts.append(f"with {row[field]} square feet of space")
+            break
+    
+    # Add rent information
+    rent_fields = ['rent', 'monthly_rent', 'price']
+    for field in rent_fields:
+        if field in row.index and pd.notna(row[field]):
+            rent_value = str(row[field])
+            if not rent_value.startswith('$'):
+                rent_value = f"${rent_value}"
+            description_parts.append(f"available for {rent_value} per month")
+            break
+    
+    # Add amenities or features
+    feature_fields = ['amenities', 'features', 'highlights']
+    for field in feature_fields:
+        if field in row.index and pd.notna(row[field]):
+            description_parts.append(f"featuring {row[field]}")
+            break
+    
+    return ". ".join(description_parts) + "."
+
+
+def create_general_natural_description(row: pd.Series, columns: List[str]) -> str:
+    """Create a natural language description for general data."""
+    non_null_items = [(col, row[col]) for col in columns if pd.notna(row[col]) and str(row[col]).strip()]
+    
+    if not non_null_items:
+        return "Data record with no significant values."
+    
+    if len(non_null_items) == 1:
+        col, val = non_null_items[0]
+        return f"This record has {col} set to {val}."
+    
+    # Create a natural description
+    parts = []
+    for i, (col, val) in enumerate(non_null_items[:5]):  # Limit to 5 items
+        if i == 0:
+            parts.append(f"This record has {col} of {val}")
+        elif i == len(non_null_items) - 1:
+            parts.append(f"and {col} of {val}")
+        else:
+            parts.append(f"{col} of {val}")
+    
+    return ", ".join(parts) + "."
+
+
+def create_json_representation(row: pd.Series) -> str:
+    """Create a clean JSON representation of the row."""
+    # Filter out null values and empty strings
+    clean_data = {}
+    for key, value in row.items():
+        if pd.notna(value) and str(value).strip():
+            clean_data[key] = value
+    
+    return json.dumps(clean_data, indent=2, default=str)
+
+
+def create_key_value_representation(row: pd.Series) -> str:
+    """Create a key-value representation optimized for search."""
+    kv_pairs = []
+    for key, value in row.items():
+        if pd.notna(value) and str(value).strip():
+            # Create searchable key-value pairs
+            clean_key = str(key).replace("_", " ").replace("-", " ").title()
+            kv_pairs.append(f"{clean_key}: {value}")
+    
+    return "\n".join(kv_pairs)
+
+
+def create_focused_property_documents(row: pd.Series, index: int, file_name: str, user_id: str, base_metadata: dict) -> List[Document]:
+    """Create additional focused documents for important property fields."""
+    focused_docs = []
+    
+    # Create focused documents for key searchable fields
+    focus_fields = {
+        'address': 'Property Address Information',
+        'building_address': 'Building Address Information', 
+        'location': 'Location Information',
+        'rent': 'Rental Price Information',
+        'monthly_rent': 'Monthly Rental Information',
+        'size': 'Property Size Information',
+        'square_feet': 'Square Footage Information',
+        'amenities': 'Property Amenities',
+        'features': 'Property Features'
+    }
+    
+    for field, description in focus_fields.items():
+        if field in row.index and pd.notna(row[field]) and str(row[field]).strip():
+            # Create focused text for this field
+            focused_text = f"{description}: {row[field]}"
+            
+            # Add context from other important fields
+            context_fields = ['address', 'floor', 'suite', 'size', 'rent']
+            context_parts = []
+            for ctx_field in context_fields:
+                if ctx_field != field and ctx_field in row.index and pd.notna(row[ctx_field]):
+                    context_parts.append(f"{ctx_field}: {row[ctx_field]}")
+            
+            if context_parts:
+                focused_text += f"\nContext: {' | '.join(context_parts)}"
+            
+            # Create metadata for this focused document
+            focused_metadata = base_metadata.copy()
+            focused_metadata['focus_field'] = field
+            focused_metadata['focus_type'] = description
+            
+            focused_doc = Document(
+                text=focused_text,
+                doc_id=f"{file_name}_row_{index}_{field}_{user_id}",
+                metadata=focused_metadata
+            )
+            focused_docs.append(focused_doc)
+    
+    return focused_docs
 
 # Legacy global variables for backward compatibility
 rag_index = None
@@ -66,290 +423,156 @@ class AsyncBM25Retriever(BaseRetriever):
 
 
 async def get_user_index(user_id: str) -> Optional[VectorStoreIndex]:
-    """Get or create user-specific VectorStoreIndex backed by ChromaDB with enhanced validation."""
-    async with error_handling_context("get_user_index", user_id=user_id) as context:
-        # Enhanced logging for user context debugging
-        logger.info(f"Getting user index for: {user_id}")
-        logger.debug(f"Currently cached user indexes: {list(user_indexes.keys())}")
-        
-        # Enhanced user_id validation
-        if not user_id or not isinstance(user_id, str):
-            logger.error(f"Invalid user_id provided: {user_id} (type: {type(user_id)})")
-            return None
-        
-        # Validate user_id doesn't contain problematic characters
-        problematic_chars = ['\x00', '\n', '\r', '\t']
-        for char in problematic_chars:
-            if char in user_id:
-                logger.error(f"User ID contains invalid character: {repr(char)}")
-                return None
-        
-        # Check cached index first with validation
-        if user_id in user_indexes:
-            cached_index = user_indexes[user_id]
-            logger.info(f"Found cached index for user: {user_id}")
-            
-            # Validate cached index is still functional
-            try:
-                # Quick validation - try to create a retriever
-                test_retriever = cached_index.as_retriever(similarity_top_k=1)
-                if test_retriever:
-                    logger.debug(f"Cached index for {user_id} is functional")
-                    return cached_index
-                else:
-                    logger.warning(f"Cached index for {user_id} failed retriever test, removing from cache")
-                    del user_indexes[user_id]
-            except Exception as validation_error:
-                logger.warning(f"Cached index for {user_id} validation failed: {validation_error}, removing from cache")
-                del user_indexes[user_id]
-        
-        try:
-            # Get user's ChromaDB collection with enhanced error handling
-            logger.debug(f"Attempting to get ChromaDB collection for user: {user_id}")
-            collection = await asyncio.to_thread(chroma_manager.get_or_create_collection, user_id)
-            
-            # Enhanced collection validation
-            if not collection:
-                logger.error(f"ChromaDB collection creation failed for user: {user_id}")
-                raise Exception("Collection creation failed")
-            
-            # Validate collection name matches expected pattern
-            expected_hash = hashlib.md5(user_id.encode('utf-8')).hexdigest()
-            expected_name = f"{settings.CHROMA_COLLECTION_PREFIX}{expected_hash}"
-            if collection.name != expected_name:
-                logger.warning(f"Collection name mismatch for {user_id}: expected {expected_name}, got {collection.name}")
-            
-            # Check if collection has documents with enhanced validation
-            try:
-                doc_count = await asyncio.to_thread(collection.count)
-                logger.info(f"ChromaDB collection for {user_id} contains {doc_count} documents")
-                
-                if doc_count == 0:
-                    logger.warning(f"ChromaDB collection for {user_id} is empty - checking if documents should exist")
-                    
-                    # Check if user has documents that should be indexed
-                    user_doc_dir = os.path.join("user_documents", user_id)
-                    if os.path.exists(user_doc_dir):
-                        csv_files = [f for f in os.listdir(user_doc_dir) if f.endswith('.csv')]
-                        if csv_files:
-                            logger.warning(f"User {user_id} has {len(csv_files)} CSV files but empty collection - may need reindexing")
-                        else:
-                            logger.info(f"User {user_id} has no CSV files - empty collection is expected")
-                    else:
-                        logger.info(f"User {user_id} document directory does not exist - empty collection is expected")
-                else:
-                    # Validate collection health by trying to peek at documents
-                    try:
-                        sample = await asyncio.to_thread(collection.peek, 1)
-                        if sample and sample.get('documents'):
-                            logger.debug(f"Collection for {user_id} is healthy - sample document retrieved")
-                        else:
-                            logger.warning(f"Collection for {user_id} count is {doc_count} but peek returned no documents")
-                    except Exception as peek_error:
-                        logger.warning(f"Collection for {user_id} peek failed: {peek_error} - collection may be corrupted")
-                        
-            except Exception as count_error:
-                logger.warning(f"Could not count documents in collection for {user_id}: {count_error}")
-                # Continue anyway - we'll try to create the index and see what happens
-            
-            # Create ChromaVectorStore with validation
-            try:
-                vector_store = ChromaVectorStore(chroma_collection=collection)
-                if not vector_store:
-                    logger.error(f"ChromaVectorStore creation failed for user: {user_id}")
-                    raise Exception("Vector store creation failed")
-                logger.debug(f"Successfully created ChromaVectorStore for user: {user_id}")
-            except Exception as vs_error:
-                logger.error(f"Failed to create ChromaVectorStore for {user_id}: {vs_error}")
-                raise
-            
-            # Create VectorStoreIndex with ChromaVectorStore
-            try:
-                index = VectorStoreIndex.from_vector_store(vector_store)
-                if not index:
-                    logger.error(f"VectorStoreIndex creation failed for user: {user_id}")
-                    raise Exception("Index creation failed")
-                logger.debug(f"Successfully created VectorStoreIndex for user: {user_id}")
-            except Exception as index_error:
-                logger.error(f"Failed to create VectorStoreIndex for {user_id}: {index_error}")
-                raise
-            
-            # Validate index functionality before caching
-            try:
-                test_retriever = index.as_retriever(similarity_top_k=1)
-                if not test_retriever:
-                    logger.error(f"Index for {user_id} failed retriever creation test")
-                    raise Exception("Index retriever test failed")
-                logger.debug(f"Index for {user_id} passed functionality test")
-            except Exception as test_error:
-                logger.error(f"Index functionality test failed for {user_id}: {test_error}")
-                raise
-            
-            # Cache the validated index
-            user_indexes[user_id] = index
-            
-            logger.info(f"Successfully created/retrieved and validated ChromaDB-backed index for user: {user_id}")
-            return index
-            
-        except Exception as e:
-            logger.error(f"Failed to get ChromaDB index for {user_id}: {e}")
-            logger.info(f"Attempting fallback to in-memory index for user: {user_id}")
-            
-            # Enhanced fallback to in-memory index
-            try:
-                # Create empty in-memory index with proper validation
-                empty_docs = []
-                index = VectorStoreIndex.from_documents(empty_docs)
-                
-                if not index:
-                    logger.error(f"Failed to create fallback in-memory index for {user_id}")
-                    return None
-                
-                # Test the fallback index
-                try:
-                    test_retriever = index.as_retriever(similarity_top_k=1)
-                    if not test_retriever:
-                        logger.error(f"Fallback index for {user_id} failed retriever test")
-                        return None
-                except Exception as test_error:
-                    logger.error(f"Fallback index test failed for {user_id}: {test_error}")
-                    return None
-                
-                # Cache the fallback index
-                user_indexes[user_id] = index
-                logger.info(f"Created and validated fallback in-memory index for user: {user_id}")
-                return index
-                
-            except Exception as fallback_error:
-                logger.error(f"Failed to create fallback index for {user_id}: {fallback_error}")
-                return None
+    """Get user-specific VectorStoreIndex."""
+    if not user_id:
+        return None
+    
+    # Check cached index first
+    if user_id in user_indexes:
+        return user_indexes[user_id]
+    
+    # No cached index found
+    return None
+
+
+async def user_index_exists(user_id: str) -> bool:
+    """Return True if the user index exists in cache."""
+    return user_id in user_indexes
 
 
 async def build_user_index(user_id: str, file_paths: List[str]) -> Optional[VectorStoreIndex]:
-    """Build user-specific index from file paths using ChromaDB with performance monitoring."""
-    # Use performance monitoring if available
-    if PERFORMANCE_MONITORING_AVAILABLE and performance_monitor is not None:
-        async with monitor_performance(
-            performance_monitor,
-            OperationType.INDEX_BUILDING,
-            f"build_user_index_{user_id}",
-            user_id=user_id,
-            file_count=len(file_paths)
-        ):
-            return await _build_user_index_impl(user_id, file_paths)
-    else:
-        return await _build_user_index_impl(user_id, file_paths)
-
-
-async def _build_user_index_impl(user_id: str, file_paths: List[str]) -> Optional[VectorStoreIndex]:
-    """Implementation of build_user_index without performance monitoring wrapper."""
+    """Build user-specific index from file paths with Chroma vector store. Now supports CSV, PDF, TXT, and JSON."""
     try:
-        # Get user's ChromaDB collection (now synchronous)
-        collection = await asyncio.to_thread(chroma_manager.get_or_create_collection, user_id)
-        use_chromadb = True
-    except Exception as e:
-        logger.error(f"Failed to get ChromaDB collection for {user_id}: {e}")
-        logger.info(f"Falling back to in-memory storage for user: {user_id}")
-        use_chromadb = False
-    
-    try:
-        # Create documents from file paths
         documents = []
         for path in file_paths:
-            df = pd.read_csv(path)
-            # Standardize column names for consistent metadata
-            df.columns = [col.strip().lower() for col in df.columns]
-            
-            for index, row in df.iterrows():
-                # The main text content
-                row_content = ", ".join([f"{header}: {value}" for header, value in row.items() if pd.notna(value)])
-                
-                # Create metadata dictionary for filtering
-                metadata = {
-                    "user_id": user_id,
-                    "file_name": os.path.basename(path),
-                    "row_index": index,
-                    "upload_timestamp": pd.Timestamp.now().isoformat()
-                }
-                
-                # Add all CSV columns as metadata
-                for key, value in row.to_dict().items():
-                    if pd.notna(value):
-                        metadata[key] = str(value)
-                
+            ext = os.path.splitext(path)[1].lower()
+            if ext == '.csv':
+                df = pd.read_csv(path)
+                # Create enhanced text embeddings for CSV data
+                enhanced_docs = await create_enhanced_csv_embeddings(df, path, user_id)
+                documents.extend(enhanced_docs)
+                logger.info(f"Created {len(enhanced_docs)} enhanced documents from CSV {os.path.basename(path)}")
+            elif ext == '.pdf':
+                reader = PdfReader(path)
+                text = "\n".join(page.extract_text() or '' for page in reader.pages)
                 doc = Document(
-                    text=row_content, 
-                    doc_id=f"{os.path.basename(path)}_row_{index}_{user_id}",
-                    metadata=metadata
+                    text=text,
+                    doc_id=f"{os.path.basename(path)}_{user_id}",
+                    metadata={"user_id": user_id, "file_name": os.path.basename(path), "file_type": "pdf"}
                 )
                 documents.append(doc)
-
+            elif ext == '.txt':
+                with open(path, 'r', encoding='utf-8') as f:
+                    text = f.read()
+                doc = Document(
+                    text=text,
+                    doc_id=f"{os.path.basename(path)}_{user_id}",
+                    metadata={"user_id": user_id, "file_name": os.path.basename(path), "file_type": "txt"}
+                )
+                documents.append(doc)
+            elif ext == '.json':
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                # Flatten JSON to string for now
+                text = json.dumps(data, indent=2)
+                doc = Document(
+                    text=text,
+                    doc_id=f"{os.path.basename(path)}_{user_id}",
+                    metadata={"user_id": user_id, "file_name": os.path.basename(path), "file_type": "json"}
+                )
+                documents.append(doc)
+            else:
+                logger.warning(f"Unsupported file type for {path}")
+        
         if documents:
-            if use_chromadb:
-                # Create ChromaVectorStore
-                vector_store = ChromaVectorStore(chroma_collection=collection)
+            # Create Chroma vector store for better performance and persistence
+            try:
+                # Initialize Chroma client
+                chroma_client = chromadb.PersistentClient(path=f"user_chroma_db/{user_id}")
                 
-                # Create VectorStoreIndex and add documents
+                # Create or get collection for this user with sanitized name
+                sanitized_user_id = sanitize_collection_name(user_id)
+                collection_name = f"user_{sanitized_user_id}_collection"
+                
+                logger.info(f"Creating Chroma collection '{collection_name}' for user '{user_id}'")
+                
+                try:
+                    # Try to delete existing collection to avoid conflicts
+                    chroma_client.delete_collection(name=collection_name)
+                    logger.info(f"Deleted existing collection '{collection_name}'")
+                except:
+                    pass  # Collection might not exist
+                
+                chroma_collection = chroma_client.create_collection(
+                    name=collection_name,
+                    metadata={"user_id": user_id, "created_at": str(pd.Timestamp.now())}
+                )
+                
+                # Create ChromaVectorStore
+                vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+                
+                # Create storage context with Chroma
+                storage_context = StorageContext.from_defaults(vector_store=vector_store)
+                
+                # Build index with Chroma vector store
                 index = VectorStoreIndex.from_documents(
                     documents, 
-                    vector_store=vector_store,
-                    embed_batch_size=100
+                    storage_context=storage_context,
+                    show_progress=True
                 )
-                logger.info(f"Built ChromaDB index for user {user_id} with {len(documents)} documents")
-            else:
-                # Fallback to in-memory index
-                index = VectorStoreIndex.from_documents(documents, embed_batch_size=100)
-                logger.info(f"Built fallback in-memory index for user {user_id} with {len(documents)} documents")
+                
+                logger.info(f"Built Chroma-backed index for user {user_id} with {len(documents)} documents")
+                
+            except Exception as chroma_error:
+                logger.warning(f"Failed to create Chroma vector store for user {user_id}: {chroma_error}")
+                logger.info(f"Falling back to in-memory vector store for user {user_id}")
+                
+                # Fallback to in-memory vector store
+                index = VectorStoreIndex.from_documents(documents)
+                logger.info(f"Built in-memory index for user {user_id} with {len(documents)} documents")
             
             # Cache the index
             user_indexes[user_id] = index
             
-            # Create BM25 retriever for this user
+            # Create BM25 retriever for hybrid search
             try:
-                # For ChromaDB indexes, we need to create nodes from the original documents
-                # since the docstore might not contain the nodes directly
-                if use_chromadb:
-                    # Convert documents to nodes for BM25
-                    from llama_index.core.schema import TextNode
-                    nodes = []
-                    for doc in documents:
-                        node = TextNode(
-                            text=doc.text,
-                            metadata=doc.metadata,
-                            id_=doc.doc_id
-                        )
-                        nodes.append(node)
-                    logger.info(f"Created {len(nodes)} nodes from documents for BM25 retriever")
+                # Get nodes from the index for BM25 retriever
+                nodes = []
+                if hasattr(index, 'docstore') and hasattr(index.docstore, 'docs'):
+                    nodes = list(index.docstore.docs.values())
+                elif hasattr(index, '_docstore') and hasattr(index._docstore, 'docs'):
+                    nodes = list(index._docstore.docs.values())
                 else:
-                    # For in-memory indexes, get nodes from docstore
-                    nodes = list(index.docstore.docs.values()) if hasattr(index.docstore, 'docs') else []
+                    # Fallback: create nodes from documents
+                    from llama_index.core.schema import TextNode
+                    nodes = [TextNode(text=doc.text, metadata=doc.metadata) for doc in documents]
                 
                 if nodes:
                     user_bm25_retrievers[user_id] = BM25Retriever.from_defaults(
-                        nodes=nodes, 
-                        similarity_top_k=5
+                        nodes=nodes,
+                        similarity_top_k=1,  # Further reduced from 2 to 1 for maximum BM25 speed
+                        verbose=False  # Disable verbose logging for performance
                     )
-                    logger.info(f"Successfully created BM25 retriever for user {user_id} with {len(nodes)} nodes")
+                    logger.info(f"Created BM25 retriever for user {user_id} with {len(nodes)} nodes")
                 else:
                     logger.warning(f"No nodes available for BM25 retriever for user {user_id}")
             except Exception as bm25_error:
                 logger.error(f"Failed to create BM25 retriever for user {user_id}: {bm25_error}")
-                import traceback
-                traceback.print_exc()
-                # Continue without BM25 - the system can still work with just vector search
+                # Continue without BM25 - vector search will still work
             
             return index
         else:
             logger.warning(f"No documents found for user {user_id}")
             return None
-
     except Exception as e:
         logger.error(f"Error building user index for {user_id}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
 async def clear_user_index(user_id: str) -> bool:
-    """Clear user-specific index and ChromaDB collection."""
+    """Clear user-specific index."""
     try:
         # Remove from local cache
         if user_id in user_indexes:
@@ -357,19 +580,7 @@ async def clear_user_index(user_id: str) -> bool:
         if user_id in user_bm25_retrievers:
             del user_bm25_retrievers[user_id]
         
-        # Try to delete ChromaDB collection (now synchronous)
-        try:
-            success = await asyncio.to_thread(chroma_manager.delete_user_collection, user_id)
-            if success:
-                logger.info(f"Cleared ChromaDB collection for user: {user_id}")
-            else:
-                logger.warning(f"Failed to clear ChromaDB collection for user: {user_id}")
-        except Exception as e:
-            logger.error(f"Error clearing ChromaDB collection for {user_id}: {e}")
-            # Continue anyway, as we've cleared the local cache
-            success = True
-        
-        logger.info(f"Cleared local index cache for user: {user_id}")
+        logger.info(f"Cleared index cache for user: {user_id}")
         return True
         
     except Exception as e:
@@ -463,7 +674,10 @@ def get_fusion_retriever(user_id: Optional[str] = None):
         
         # Validate that index can create a retriever
         try:
-            vector_retriever = user_index.as_retriever(similarity_top_k=5)
+            vector_retriever = user_index.as_retriever(
+                similarity_top_k=1,  # Further reduced from 2 to 1 for maximum vector speed
+                response_mode="compact"  # Use compact response mode
+            )
             if not vector_retriever:
                 logger.error(f"Failed to create vector retriever from index for user {user_id}")
                 return None
@@ -505,10 +719,11 @@ def get_fusion_retriever(user_id: Optional[str] = None):
     try:
         fusion_retriever = QueryFusionRetriever(
             [vector_retriever, async_bm25_retriever],
-            similarity_top_k=5,
-            num_queries=1,  # generate 0 additional queries
-            mode=FUSION_MODES.RECIPROCAL_RANK,
+            similarity_top_k=2,  # Further reduced from 3 to 2 for maximum speed
+            num_queries=1,  # generate 0 additional queries for speed
+            mode=FUSION_MODES.RECIPROCAL_RANK,  # Fast ranking mode
             use_async=True,
+            verbose=False,  # Disable verbose logging for performance
         )
         
         if not fusion_retriever:
@@ -544,122 +759,3 @@ async def retrieve_context(query_text: str, user_id: Optional[str] = None):
     return context_str
 
 
-async def retrieve_context_optimized(query_text: str, user_id: Optional[str] = None) -> MultiStrategySearchResult:
-    """
-    Enhanced context retrieval using multi-strategy search logic with performance monitoring.
-    
-    This function implements the multi-strategy search approach that:
-    1. Tries multiple search strategies (exact, address-only, fuzzy, partial)
-    2. Preserves exact address formatting from queries
-    3. Implements fallback strategies when primary search fails
-    4. Ranks and validates search results
-    
-    Args:
-        query_text: The user's search query
-        user_id: Optional user ID for user-specific search
-        
-    Returns:
-        MultiStrategySearchResult containing the best results from all strategies
-    """
-    # Use performance monitoring if available
-    if PERFORMANCE_MONITORING_AVAILABLE and performance_monitor is not None:
-        async with monitor_performance(
-            performance_monitor,
-            OperationType.MULTI_STRATEGY_SEARCH,
-            f"retrieve_context_optimized_{user_id}",
-            user_id=user_id,
-            query_length=len(query_text)
-        ):
-            return await _retrieve_context_optimized_impl(query_text, user_id)
-    else:
-        return await _retrieve_context_optimized_impl(query_text, user_id)
-
-
-async def _retrieve_context_optimized_impl(query_text: str, user_id: Optional[str] = None) -> MultiStrategySearchResult:
-    """Implementation of retrieve_context_optimized without performance monitoring wrapper."""
-    fusion_retriever = get_fusion_retriever(user_id)
-    if not fusion_retriever:
-        logger.warning(f"No fusion retriever available for user: {user_id}")
-        # Return empty result
-        return MultiStrategySearchResult(
-            original_query=query_text,
-            best_result=None,
-            all_results=[],
-            total_execution_time_ms=0.0,
-            nodes_found=[]
-        )
-    
-    logger.info(f"Starting multi-strategy search for user '{user_id}' with query: '{query_text}'")
-    
-    try:
-        # Perform multi-strategy search
-        search_result = await multi_strategy_search(fusion_retriever, query_text)
-        
-        logger.info(f"Multi-strategy search completed for user '{user_id}': "
-                   f"{len(search_result.nodes_found)} nodes found from {len(search_result.all_results)} strategies "
-                   f"in {search_result.total_execution_time_ms:.2f}ms")
-        
-        # Record individual strategy performance if monitoring is available
-        if PERFORMANCE_MONITORING_AVAILABLE and performance_monitor is not None:
-            for result in search_result.all_results:
-                performance_monitor.record_metric(
-                    operation_type=OperationType.SEARCH_OPERATION,
-                    operation_name=f"search_strategy_{result.strategy}",
-                    duration_ms=result.execution_time_ms,
-                    success=result.success,
-                    user_id=user_id,
-                    strategy=result.strategy,
-                    nodes_found=len(result.nodes),
-                    query_used=result.query_used
-                )
-        
-        # Log details about each strategy's performance
-        for result in search_result.all_results:
-            logger.debug(f"Strategy '{result.strategy}': {len(result.nodes)} nodes, "
-                        f"success={result.success}, time={result.execution_time_ms:.2f}ms, "
-                        f"query='{result.query_used}'")
-        
-        if search_result.best_result:
-            logger.info(f"Best strategy selected: '{search_result.best_result.strategy}' "
-                       f"with {len(search_result.best_result.nodes)} nodes")
-        
-        return search_result
-        
-    except Exception as e:
-        logger.error(f"Error during multi-strategy search for user '{user_id}': {e}")
-        # Return empty result on error
-        return MultiStrategySearchResult(
-            original_query=query_text,
-            best_result=None,
-            all_results=[],
-            total_execution_time_ms=0.0,
-            nodes_found=[]
-        )
-
-
-async def retrieve_context_with_fallback(query_text: str, user_id: Optional[str] = None) -> str:
-    """
-    Retrieve context using multi-strategy search with fallback to original method.
-    
-    This function provides backward compatibility while using the enhanced search logic.
-    It returns a formatted context string like the original retrieve_context function.
-    
-    Args:
-        query_text: The user's search query
-        user_id: Optional user ID for user-specific search
-        
-    Returns:
-        Formatted context string from the best search results
-    """
-    # Try multi-strategy search first
-    multi_result = await retrieve_context_optimized(query_text, user_id)
-    
-    if multi_result.nodes_found:
-        # Format the context from multi-strategy results
-        logger.info(f"Using multi-strategy search results: {len(multi_result.nodes_found)} nodes")
-        context_str = "\n\n".join([node.get_content() for node in multi_result.nodes_found])
-        return context_str
-    else:
-        # Fallback to original method
-        logger.info("Multi-strategy search found no results, falling back to original method")
-        return await retrieve_context(query_text, user_id)

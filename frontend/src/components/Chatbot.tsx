@@ -3,7 +3,8 @@ import { useRef, useEffect, useState } from "react";
 import { useChat } from "../hooks/useChat";
 import { Paperclip, Send, MessageSquare, X, User as UserIcon, FileText, CheckSquare, Square } from "lucide-react";
 import { motion, AnimatePresence, useAnimation, easeInOut, easeOut } from "framer-motion";
-import AppointmentConfirmation from './AppointmentConfirmation';
+// REMOVE: AppointmentConfirmation import
+// import AppointmentConfirmation from './AppointmentConfirmation';
 import { PureMultimodalInput } from "./ui/multimodal-ai-chat-input";
 import { ThemeSwitch } from "./ui/theme-switch-button";
 import { AIInputField } from "./ui/ai-input";
@@ -194,8 +195,8 @@ const Chatbot = ({ currentUser, openAuthModal }: ChatbotProps) => {
   const { 
     messages, setMessages, input, setInput, handleSendMessage, isLoading, isIndexing, 
     availableDocs, isAwaitingDocSelection, setIsAwaitingDocSelection, 
-    loadSelectedDocuments, handleFileUpload, fetchHistory, 
-    appointmentToConfirm, handleConfirmAppointment, handleCancelAppointment
+    loadSelectedDocuments, handleFileUpload, fetchHistory
+    // REMOVE: appointmentToConfirm, handleConfirmAppointment, handleCancelAppointment
   } = useChat(currentUser?.email || null);
 
   const [isOpen, setIsOpen] = useState(false);
@@ -275,14 +276,15 @@ useEffect(() => {
 
   return (
     <>
-      {appointmentToConfirm && (
+      {/* REMOVE: AppointmentConfirmation UI/modal logic */}
+      {/* {appointmentToConfirm && (
         <AppointmentConfirmation 
             appointment={appointmentToConfirm}
             onConfirm={handleConfirmAppointment}
             onCancel={handleCancelAppointment}
             isLoading={isLoading}
         />
-      )}
+      )} */}
 
       <AnimatePresence>
         {isOpen && (

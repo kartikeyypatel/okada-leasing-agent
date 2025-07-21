@@ -25,7 +25,6 @@ export const useChat = (userEmail: string | null) => {
     
     const [availableDocs, setAvailableDocs] = useState<string[]>([]);
     const [isAwaitingDocSelection, setIsAwaitingDocSelection] = useState(false);
-    const [appointmentToConfirm, setAppointmentToConfirm] = useState<AppointmentDetails | null>(null);
     
     useEffect(() => {
         if (userEmail) {
@@ -48,21 +47,20 @@ export const useChat = (userEmail: string | null) => {
             setMessages([]);
             setAvailableDocs([]);
             setIsAwaitingDocSelection(false);
-            setAppointmentToConfirm(null);
         }
     }, [userEmail]);
 
     const pollIndexingStatus = () => {
         const intervalId = setInterval(async () => {
             try {
-                const response = await fetch(`${API_BASE_URL}/documents/status`);
+                const response = await fetch(`${API_BASE_URL}/documents/status?user_id=${encodeURIComponent(userEmail ?? '')}`);
                 const data = await response.json();
 
-                if (data.status === 'success' || data.status === 'error' || data.status === 'idle') {
+                if (data.status === 'ready' || data.status === 'error') {
                     clearInterval(intervalId);
                     toast.dismiss();
                     
-                    if (data.status === 'success') {
+                    if (data.status === 'ready') {
                         toast.success(data.message || "Documents ready!");
                         setIsAwaitingDocSelection(false);
                         fetchHistory();
@@ -132,51 +130,11 @@ export const useChat = (userEmail: string | null) => {
             if (data.answer) {
                 setMessages((prev) => [...prev, { role: 'bot', content: data.answer }]);
             }
-            if (data.appointment_details) {
-                setAppointmentToConfirm(data.appointment_details);
-            } else {
-                setAppointmentToConfirm(null);
-            }
         } catch (error) {
             setMessages((prev) => [...prev, { role: 'bot', content: `Error: ${(error as Error).message}` }]);
         } finally {
             setIsLoading(false);
         }
-    };
-
-    const handleConfirmAppointment = async () => {
-        if (!appointmentToConfirm || !userEmail) return;
-
-        setIsLoading(true);
-        try {
-            const response = await fetch(`${API_BASE_URL}/appointments/schedule`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    user_id: userEmail,
-                    ...appointmentToConfirm,
-                }),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || 'Failed to schedule appointment.');
-            }
-            const data = await response.json();
-            if (data.message) {
-                setMessages((prev) => [...prev, { role: 'bot', content: data.message }]);
-            }
-        } catch (error) {
-            toast.error(`Confirmation failed: ${(error as Error).message}`);
-            throw error;
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const handleCancelAppointment = () => {
-        setAppointmentToConfirm(null);
-        setMessages((prev) => [...prev, { role: 'bot', content: "Okay, I've cancelled the scheduling request." }]);
     };
     
     const loadSelectedDocuments = async (selectedDocs: string[]): Promise<boolean> => {
@@ -239,10 +197,6 @@ export const useChat = (userEmail: string | null) => {
         messages, setMessages, input, setInput, handleSendMessage, isLoading, isIndexing,
         availableDocs, isAwaitingDocSelection, setIsAwaitingDocSelection,
         loadSelectedDocuments, handleFileUpload,
-        fetchHistory,
-        appointmentToConfirm,
-        setAppointmentToConfirm,
-        handleConfirmAppointment,
-        handleCancelAppointment,
+        fetchHistory
     };
 };
